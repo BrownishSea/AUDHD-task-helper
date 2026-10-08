@@ -36,7 +36,13 @@ Sirve para compartir el dispositivo con otra persona o para separar contextos (p
 - **Foto de perfil**: en *Editar* (o al crear un perfil) pulsa **Elegir foto** y escoge una de la galería o de tus archivos.
   Se recorta en cuadrado, se reduce y se guarda solo en el dispositivo. Se ve al momento; **Cancelar** la deja como estaba
   y **Quitar foto** vuelve a la inicial. La copia de seguridad no incluye la foto.
-- Los avisos de los otros perfiles también te llegan: «Aviso para Trabajo: …» con un botón para cambiar.
+- **Solo suena un perfil a la vez** (Pasito es para una persona). En *Perfiles → ¿Quién recibe los avisos?* eliges:
+  - **El perfil que esté abierto** (por defecto): los avisos cambian contigo al cambiar de perfil.
+  - **Siempre «Nombre»**: ese perfil avisa aunque tengas abierto otro. Su aviso sale con su nombre y los botones
+    «Ir a «Nombre»», «En 10 min» y «En 1 hora».
+
+  Los demás perfiles quedan **en silencio**: no suenan, su círculo de arriba lleva una campana tachada y Hoy lo explica
+  con un botón «Que avise este perfil». Sus tareas vencidas siguen apareciendo en «Se pasó la hora».
 - Al cambiar de perfil, si había una sesión de enfoque en marcha, queda en pausa.
 - Borrar un perfil se puede deshacer unos segundos. Los perfiles **no tienen contraseña**.
 - Si usabas la versión anterior, tus datos pasan solos al primer perfil («Yo»; puedes renombrarlo).

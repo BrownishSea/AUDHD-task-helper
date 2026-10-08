@@ -1,5 +1,5 @@
 /* Pasito: service worker. Guarda la app para usarla sin conexión y abre Pasito al tocar un aviso. */
-const CACHE = 'pasito-v3';
+const CACHE = 'pasito-v4';
 const ASSETS = ['./', 'index.html', 'styles.css', 'logic.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', event => {

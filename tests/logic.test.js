@@ -81,6 +81,17 @@ test('foto de perfil: solo imágenes seguras y recorte cuadrado', () => {
   assert.deepEqual(L.squareCrop(120, 120), { sx: 0, sy: 0, side: 120 });
 });
 
+test('solo avisa un perfil: el elegido o el que esté abierto', () => {
+  const list = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  assert.equal(L.notifyTarget({ active: 'b', list }), 'b', 'sin elegir: el abierto');
+  assert.equal(L.notifyTarget({ active: 'b', notify: 'active', list }), 'b');
+  assert.equal(L.notifyTarget({ active: 'b', notify: 'c', list }), 'c', 'elegido aunque esté abierto otro');
+  assert.equal(L.notifyTarget({ active: 'b', notify: 'borrado', list }), 'b', 'si el elegido ya no existe, el abierto');
+  assert.equal(L.notifyTarget({ active: 'x', list }), 'a');
+  assert.equal(L.notifyTarget({ list: [] }), null);
+  assert.equal(L.notifyTarget(null), null);
+});
+
 test('repetición diaria, laborables y semanal', () => {
   const now = NOW.getTime();
   assert.equal(L.nextOccurrence(at(8, 9), 'daily', now), at(9, 9));

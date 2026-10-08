@@ -84,6 +84,22 @@ main:focus { outline: none; }
 .avatar.has-photo { padding: 2px; }
 .avatar img { display: block; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
 .avatar-lg { width: 4rem; height: 4rem; font-size: 1.6rem; }
+.avatar-xs { width: 1.35rem; height: 1.35rem; font-size: .7rem; }
+.avatar-xs.has-photo { padding: 1px; }
+.profile-btn { position: relative; }
+.mute-badge { position: absolute; left: 1.6rem; bottom: .05rem; display: grid; place-items: center; width: 1.15rem; height: 1.15rem; border-radius: 50%; background: var(--sheet); color: var(--ink-soft); box-shadow: 0 0 0 1.5px var(--rule); }
+.mute-badge .ico { width: .75rem; height: .75rem; stroke-width: 2.4; }
+.avatar-wrap { position: relative; flex: none; display: inline-flex; }
+.bell-badge { position: absolute; right: -.3rem; bottom: -.3rem; display: grid; place-items: center; width: 1.3rem; height: 1.3rem; border-radius: 50%; background: var(--pen); color: var(--pen-ink); box-shadow: 0 0 0 2px var(--sheet); }
+.bell-badge .ico { width: .8rem; height: .8rem; stroke-width: 2.4; }
+.notify-list { display: flex; flex-direction: column; gap: .4rem; }
+.notify-opt { display: flex; align-items: center; gap: .7rem; min-height: 3.2rem; padding: .55rem .75rem; border: 1.5px solid var(--rule); border-radius: var(--r); cursor: pointer; }
+.notify-opt:has(input:checked) { border-color: var(--pen); background: var(--pen-soft); }
+.notify-opt input { flex: none; width: 1.2rem; height: 1.2rem; margin: 0; accent-color: var(--pen); }
+.notify-text { display: flex; flex-direction: column; min-width: 0; }
+.notify-text strong { overflow-wrap: anywhere; }
+.reminder .eyebrow { flex-wrap: wrap; padding-right: 2.5rem; }
+.reminder .eyebrow .avatar { margin-inline: .1rem; }
 .photo-row { display: flex; align-items: center; gap: .8rem; }
 .photo-actions { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem; }
 .icon-btn { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; color: var(--ink-soft); flex: none; }
@@ -287,12 +303,12 @@ textarea.input { min-height: 4.5rem; resize: vertical; }
 .tab[aria-current="page"] { background: var(--pen-soft); color: var(--pen); }
 .tab.is-live::after { content: ''; position: absolute; top: .35rem; right: calc(50% - 1.1rem); width: .55rem; height: .55rem; background: var(--coral); border-radius: 50%; }
 
-.toasts { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); z-index: 50; display: flex; flex-direction: column; gap: .5rem; width: min(calc(100% - 32px), 28rem); transform: translateX(-50%); pointer-events: none; }
-.toast { display: flex; align-items: center; gap: .7rem; padding: .65rem .7rem .65rem 1rem; background: var(--toast-bg); border-radius: 14px; box-shadow: var(--shadow); color: var(--toast-fg); pointer-events: auto; animation: toast-in .28s cubic-bezier(.2, .8, .2, 1); }
+.toasts { position: fixed; left: 50%; bottom: calc(5.4rem + var(--toast-lift, 0px) + env(safe-area-inset-bottom, 0px)); z-index: 50; display: flex; flex-direction: column; gap: .5rem; width: min(calc(100% - 32px), 28rem); transform: translateX(-50%); pointer-events: none; }
+.toast { display: flex; align-items: center; gap: .7rem; padding: .65rem .7rem .65rem 1rem; background: var(--toast-bg); border-radius: 14px; box-shadow: var(--shadow); color: var(--toast-fg); pointer-events: none; animation: toast-in .28s cubic-bezier(.2, .8, .2, 1); }
 .toast-text { flex: 1; min-width: 0; }
 .toast-hand .toast-text { font: 600 1.4rem/1.1 var(--f-hand); }
-.toast-btn { min-height: 40px; padding: .35rem .6rem; border-radius: 8px; color: var(--toast-accent); font-weight: 700; white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(-12px); } }
+.toast-btn { min-height: 40px; padding: .35rem .6rem; border-radius: 8px; color: var(--toast-accent); font-weight: 700; white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; pointer-events: auto; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
 
 .reminder { position: fixed; left: 50%; bottom: calc(5rem + env(safe-area-inset-bottom, 0px)); z-index: 40; display: flex; flex-direction: column; gap: .6rem; width: min(calc(100% - 24px), 30rem); padding: 1.1rem 1.1rem 1rem; background: var(--sheet); border: 2px solid var(--pen); border-radius: 20px; box-shadow: var(--shadow), 0 0 0 6px var(--pen-soft); transform: translateX(-50%); animation: pop .35s cubic-bezier(.2, .9, .3, 1.2); }
 .reminder h2 { padding-right: 2.5rem; font-size: 1.35rem; overflow-wrap: anywhere; }

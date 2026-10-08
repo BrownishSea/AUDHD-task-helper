@@ -189,6 +189,15 @@
     return { sx: (w - side) / 2, sy: h > w ? (h - side) * 0.3 : (h - side) / 2, side };
   }
 
+  // Perfil que recibe los avisos: el elegido (meta.notify = id) o, con 'active' o un id que ya no existe, el que esté abierto.
+  // Pasito es para una persona a la vez: solo suena un perfil.
+  function notifyTarget(meta) {
+    if (!meta || !Array.isArray(meta.list) || !meta.list.length) return null;
+    const exists = id => meta.list.some(p => p && p.id === id);
+    if (meta.notify && meta.notify !== 'active' && exists(meta.notify)) return meta.notify;
+    return exists(meta.active) ? meta.active : meta.list[0].id;
+  }
+
   // Texto para buscar sin importar mayúsculas ni tildes.
   const searchKey = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
@@ -321,6 +330,6 @@
   return {
     DAY, STARS, LEVELS,
     dayKey, dayDiff, addDays, fmtTime, toLocalInput, fmtWhen, fmtDay, fmtLongDate,
-    parseQuickInput, nextAt, searchKey, isSafePhoto, squareCrop, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
+    parseQuickInput, nextAt, searchKey, isSafePhoto, squareCrop, notifyTarget, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
   };
 });

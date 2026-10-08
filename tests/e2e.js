@@ -29,9 +29,12 @@ function serve() {
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'es-ES' });
   const page = await context.newPage();
+  page.setDefaultTimeout(10000);
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/fonts\.g/.test(m.text())) errors.push(m.text()); });
+  // Siempre booleanos en las aserciones: un ElementHandle dentro de un mensaje de error agota la memoria al formatearlo.
+  const exists = async (sel, pg = page) => (await pg.$(sel)) !== null;
   const shotsDir = process.env.SHOTS_DIR;
   const shot = async name => { if (shotsDir) await page.screenshot({ path: path.join(shotsDir, `${name}.png`) }); };
   const data = () => page.evaluate(() => {
@@ -43,7 +46,7 @@ function serve() {
       await fn();
       console.log(`ok - ${name}`);
     } catch (e) {
-      console.log(`not ok - ${name}\n  ${e.message.split('\n')[0]}`);
+      console.log(`not ok - ${name}\n  ${String(e.message).split('\n').slice(0, 6).join('\n  ')}\n  ${String(e.stack).split('\n').find(l => l.includes('e2e.js')) || ''}`);
       process.exitCode = 1;
     }
   };
@@ -181,7 +184,7 @@ function serve() {
     assert.ok(await page.isHidden('#reminder'));
   });
 
-  await step('perfiles: crear, separar datos, avisos cruzados, volver y borrar', async () => {
+  await step('perfiles: crear, separar datos, solo avisa el perfil elegido, volver y borrar', async () => {
     const firstId = (await data()).meta.active;
     await page.click('#profileBtn');
     await page.fill('#pnName', 'Trabajo');
@@ -198,36 +201,141 @@ function serve() {
     await page.press('#captureInput', 'Enter');
     assert.equal((await data()).state.tasks.length, 1);
 
-    // Un aviso vencido del otro perfil llega como toast con su nombre.
-    await page.evaluate(id => {
+    const workId = meta.active;
+    const overdue = (pid, title) => page.evaluate(([id, ttl]) => {
       const key = `pasito-v1:${id}`;
-      const s = JSON.parse(localStorage.getItem(key));
-      const t = s.tasks.find(x => x.title === 'Pedir cita con el médico');
+      const st = JSON.parse(localStorage.getItem(key));
+      const t = st.tasks.find(x => x.title === ttl);
       t.remindAt = new Date(Date.now() - 30000).toISOString();
       t.notified = false;
-      localStorage.setItem(key, JSON.stringify(s));
-    }, firstId);
-    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      localStorage.setItem(key, JSON.stringify(st));
+    }, [pid, title]);
+    const wake = () => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    const taskIn = async (pid, title) => JSON.parse(await page.evaluate(id => localStorage.getItem(`pasito-v1:${id}`), pid)).tasks.find(x => x.title === title);
+
+    // Por defecto solo avisa el perfil abierto: un aviso vencido de «Yo» no suena estando en «Trabajo».
+    assert.equal((await data()).meta.notify, 'active');
+    await overdue(firstId, 'Pedir cita con el médico');
+    await wake();
     await page.waitForTimeout(200);
-    assert.ok(await page.isVisible('.toast >> text=Aviso para Yo: Pedir cita con el médico'));
+    assert.ok(await page.isHidden('#reminder'), '«Yo» está en silencio');
+    assert.equal((await taskIn(firstId, 'Pedir cita con el médico')).notified, false, 'queda pendiente para cuando se abra');
+    assert.ok(await page.isHidden('#profileMute'));
+
+    // Elegimos que avise siempre «Yo»: su aviso llega aunque esté abierto «Trabajo», y «Trabajo» queda en silencio.
+    await page.click('#profileBtn');
+    await page.check(`#nt-${firstId}`);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#reminder:has-text("Aviso para")');
+    assert.equal((await page.textContent('#remTitle')).trim(), 'Pedir cita con el médico');
+    assert.match(await page.textContent('#reminder .eyebrow'), /Yo/);
+    assert.ok(await page.isVisible('#profileMute'), 'la cabecera muestra que «Trabajo» está en silencio');
+    assert.ok(await page.isVisible('#notifyHere'));
     await shot('06-perfil-trabajo');
 
-    await page.click('#profileBtn');
-    await shot('07-perfiles');
-    await page.click(`#pp-${firstId}`);
+    // Posponer desde aquí cambia la tarea de «Yo».
+    await page.click('[data-action="ext-snooze"][data-min="10"]');
+    const snoozed = await taskIn(firstId, 'Pedir cita con el médico');
+    const mins = Math.round((Date.parse(snoozed.remindAt) - Date.now()) / 60000);
+    assert.ok(mins >= 9 && mins <= 10, `pospuesto ${mins} min`);
+    assert.equal(snoozed.notified, false);
+    assert.ok(await page.isHidden('#reminder'));
+
+    // Una rutina diaria de «Yo» hecha ayer vuelve a sonar hoy aunque esté abierto «Trabajo».
+    await page.evaluate(id => {
+      const key = `pasito-v1:${id}`;
+      const st = JSON.parse(localStorage.getItem(key));
+      const t = st.tasks.find(x => x.title === 'Responder un correo pendiente');
+      Object.assign(t, { repeat: 'daily', done: true, doneAt: new Date(Date.now() - 86400000).toISOString(), remindAt: new Date(Date.now() - 30000).toISOString(), notified: false });
+      localStorage.setItem(key, JSON.stringify(st));
+    }, firstId);
+    await wake();
+    await page.waitForSelector('#reminder:has-text("Responder un correo pendiente")');
+    assert.equal((await taskIn(firstId, 'Responder un correo pendiente')).done, false);
+    await page.click('[data-action="ext-close"]');
+
+    // Si la terminan en otra pestaña, la tarjeta desaparece y no se puede posponer una tarea ya hecha.
+    await overdue(firstId, 'Preparar la presentación');
+    await wake();
+    await page.waitForSelector('#reminder:has-text("Preparar la presentación")');
+    await page.evaluate(id => {
+      const key = `pasito-v1:${id}`;
+      const st = JSON.parse(localStorage.getItem(key));
+      st.tasks.find(x => x.title === 'Preparar la presentación').done = true;
+      const value = JSON.stringify(st);
+      localStorage.setItem(key, value);
+      window.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+    }, firstId);
+    await page.waitForSelector('#reminder', { state: 'hidden' });
+
+    // En un perfil en silencio no se promete «Te aviso».
+    await page.fill('#captureInput', 'Llamar al cliente en 20 min');
+    await page.press('#captureInput', 'Enter');
+    assert.ok(await page.isVisible('.toast:has-text("está en silencio")'));
+    // Distingue mayúsculas: el aviso de posponer dice «te aviso» y es correcto.
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.toast')].some(t => t.textContent.includes('Te aviso'))), false);
+
+    // Las tareas de «Trabajo» no suenan mientras está en silencio.
+    await overdue(workId, 'Preparar informe');
+    await page.reload();
+    await page.waitForTimeout(400);
+    assert.ok(await page.isHidden('#reminder'), '«Trabajo» no suena');
+    assert.equal((await taskIn(workId, 'Preparar informe')).notified, false);
+
+    // «Ir a Yo» cambia de perfil y muestra el aviso completo.
+    await overdue(firstId, 'Pedir cita con el médico');
+    await wake();
+    await page.waitForSelector('#reminder:has-text("Aviso para")');
+    await shot('06b-aviso-de-otro-perfil');
+    await page.click('[data-action="ext-go"]');
     ({ meta, state } = await data());
     assert.equal(meta.active, firstId);
     assert.ok(state.tasks.length > 5, 'el primer perfil conserva sus tareas');
+    assert.equal((await page.textContent('#remTitle')).trim(), 'Pedir cita con el médico');
+    assert.equal(await page.getAttribute('#reminder', 'data-id'), state.tasks.find(x => x.title === 'Pedir cita con el médico').id);
 
-    const workId = meta.list.find(p => p.name === 'Trabajo').id;
+    // Salir del perfil que avisa con su aviso en pantalla: el aviso sigue, ahora como «Aviso para Yo».
     await page.click('#profileBtn');
+    await page.click(`#pp-${workId}`);
+    await page.waitForSelector('#reminder:has-text("Aviso para")');
+    assert.equal((await page.textContent('#remTitle')).trim(), 'Pedir cita con el médico');
+    await page.click('[data-action="ext-go"]');
+    assert.equal((await data()).meta.active, firstId);
+    await page.click('[data-action="rem-close"]');
+    assert.ok(await page.isHidden('#profileMute'));
+
+    // Pasar con las flechas por las opciones no hace sonar ni «gasta» los avisos de los perfiles por los que se pasa.
+    assert.equal((await taskIn(workId, 'Preparar informe')).notified, false);
+    await page.click('#profileBtn');
+    await page.focus('#nt-active');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('Escape');
+    assert.equal((await data()).meta.notify, firstId);
+    assert.equal((await taskIn(workId, 'Preparar informe')).notified, false, '«Trabajo» no se dio por avisado');
+
+    // Borrar el perfil elegido vuelve a «el que esté abierto»; deshacer lo recupera todo, también la elección.
+    await page.click('#profileBtn');
+    await page.check(`#nt-${workId}`);
+    assert.ok(await page.isVisible(`.bell-badge[data-pid="${workId}"]`));
+    assert.ok(await page.isHidden(`.bell-badge[data-pid="${firstId}"]`));
+    await shot('07-perfiles');
     await page.click(`#pe-${workId}`);
     await page.click('[data-action="profile-delete-ask"]');
     await page.click('[data-action="profile-delete"]');
     assert.equal((await data()).meta.list.length, 1);
-    await page.click('.toast-btn:text("Deshacer")');
-    assert.equal((await data()).meta.list.length, 2);
-    assert.equal(JSON.parse(await page.evaluate(id => localStorage.getItem(`pasito-v1:${id}`), workId)).tasks.length, 1);
+    assert.equal((await data()).meta.notify, 'active');
+    assert.ok(await page.isHidden('#profileMute'), 'tras borrar el perfil elegido, el abierto deja de estar en silencio');
+    assert.equal(await exists('#notifyHere'), false);
+    await page.click('.toast:has-text("borrado") .toast-btn');
+    ({ meta } = await data());
+    assert.equal(meta.list.length, 2);
+    assert.equal(meta.notify, workId);
+    assert.equal(JSON.parse(await page.evaluate(id => localStorage.getItem(`pasito-v1:${id}`), workId)).tasks.length, 2, '«Preparar informe» y «Llamar al cliente»');
+    await page.check('#nt-active');
+    await page.keyboard.press('Escape');
+    assert.equal((await data()).meta.notify, 'active');
   });
 
   await step('foto de perfil: elegir, recortar, deshacer, rechazar archivos malos y crear con foto', async () => {
@@ -248,7 +356,7 @@ function serve() {
 
     await page.click('.toast:has-text("Foto de perfil guardada") .toast-btn');
     assert.equal(await photoOf(id), undefined);
-    assert.equal(await page.$('#profileAvatar img'), null);
+    assert.equal(await exists('#profileAvatar img'), false);
 
     await page.setInputFiles('#pe-photo', { name: 'nota.png', mimeType: 'image/png', buffer: Buffer.from('no soy una imagen') });
     await page.waitForSelector('.toast:has-text("No pude leer esa imagen")');
@@ -261,7 +369,7 @@ function serve() {
     await page.focus('#pe-photo-del');
     await page.keyboard.press('Enter');
     assert.equal(await photoOf(id), undefined);
-    assert.equal(await page.$('#profileAvatar img'), null);
+    assert.equal(await exists('#profileAvatar img'), false);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'pe-pick', 'el foco sigue dentro de la hoja');
 
     // «Cancelar» deja la foto como estaba al abrir el editor (aquí, sin foto).
@@ -269,7 +377,7 @@ function serve() {
     await page.waitForSelector('#profileAvatar img');
     await page.click('[data-action="profile-edit-cancel"]');
     assert.equal(await photoOf(id), undefined);
-    assert.equal(await page.$('#profileAvatar img'), null);
+    assert.equal(await exists('#profileAvatar img'), false);
 
     // Crear sin esperar a que se vea la vista previa: el perfil se crea igual con su foto.
     await page.fill('#pnName', 'Ana');
@@ -291,7 +399,7 @@ function serve() {
     });
     await page.reload();
     await page.waitForTimeout(300);
-    assert.equal(await page.$('#profileAvatar img'), null);
+    assert.equal(await exists('#profileAvatar img'), false);
   });
 
   await step('foto con almacenamiento lleno o bloqueado: avisos claros y nada se rompe', async () => {
@@ -305,7 +413,7 @@ function serve() {
       await pg.click('[data-action="profile-edit"]');
       await pg.setInputFiles('#pe-photo', path.join(ROOT, 'icon-512.png'));
       await pg.waitForSelector(expectPhotoShown ? '#profileAvatar img' : `.toast:has-text("${expectedToast}")`);
-      assert.equal(!!(await pg.$('#profileAvatar img')), expectPhotoShown);
+      assert.equal(await exists('#profileAvatar img', pg), expectPhotoShown);
       if (!expectPhotoShown) {
         // Perfil nuevo con foto cuando no cabe: se crea sin ella y el aviso se ve después de cambiar.
         await pg.click('[data-action="profile-edit-cancel"]');
@@ -315,7 +423,7 @@ function serve() {
         await pg.click('#profileNewForm button[type="submit"]');
         await pg.waitForSelector('.toast:has-text("No quedaba espacio para la foto")');
         assert.equal((await pg.textContent('#profileName')).trim(), 'Leo');
-        assert.equal(await pg.$('#profileAvatar img'), null);
+        assert.equal(await exists('#profileAvatar img', pg), false);
       }
       await ctx.close();
     };

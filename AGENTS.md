@@ -28,10 +28,22 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
 
 ## Arquitectura de `app.js`
 
-- **Perfiles**: `localStorage['pasito-perfiles'] = { active, list:[{id,name,color}] }` y un estado por perfil en
+- **Perfiles**: `localStorage['pasito-perfiles'] = { active, notify, list:[{id,name,color,photo?}] }` y un estado por perfil en
   `localStorage['pasito-v1:<id>']`. `loadProfiles()` migra la clave antigua `pasito-v1` (v1, sin perfiles) al primer perfil.
   `activateProfile()` guarda, pausa el enfoque, carga el otro estado, limpia `ui` y toasts y vuelve a Hoy.
-  `checkOtherProfiles()` (en cada `tick`) dispara los avisos vencidos de los perfiles inactivos como toast + notificación.
+- **Solo avisa un perfil** (petición expresa: uso individual). `notify` es `'active'` (el abierto, por defecto) o un id;
+  `L.notifyTarget(meta)` lo resuelve (si el id ya no existe, el abierto). `tick()` solo procesa avisos e insistencia del perfil
+  abierto si es el elegido (`activeNotifies()`); un perfil en silencio conserva `notified=false`, sus vencidas salen en
+  «Se pasó la hora» y su cola en pantalla se oculta (no se borra). Si el elegido no está abierto, `checkOtherProfiles()` lee su
+  estado en bruto, reinicia sus rutinas (`resetIfDue`, compartido con `housekeeping`), marca `notified`, programa su insistencia
+  y encola `ui.extQueue` ({pid, taskId}); `renderReminder()` lo muestra como tarjeta «Aviso para X» (`ext-go`, `ext-snooze`,
+  `ext-close`, que escriben en el almacenamiento de ese perfil vía `updateExternalTask`, que no toca tareas ya hechas).
+  `activateProfile()` pasa los avisos externos del perfil que se abre a su cola normal y, si el que se deja es el elegido,
+  convierte su cola en avisos externos. El selector (`notifyTarget`) aplica la elección con retardo (`chooseNotifyTarget`,
+  600 ms, o al cerrar la hoja / pulsar otra cosa) porque las flechas del teclado marcan cada opción al pasar.
+  Al poner una hora en un perfil en silencio, `remindPromise()` no promete «Te aviso».
+- **Avisos cortos (toasts)**: abajo, encima de las pestañas; no capturan toques salvo su botón, y suben por encima de la
+  tarjeta de recordatorio (`liftToasts`, variable CSS `--toast-lift`). Antes, arriba, tapaban perfil y ajustes.
   Los colores se validan contra `PROFILE_COLORS` (`safeColor`) porque van a un `style`.
 - **Foto de perfil** (`photo` en la entrada del perfil dentro de `pasito-perfiles`, data URL JPEG de 192 px, ~10–20 KB):
   `makePhoto()` recorta con `L.squareCrop` (retratos sesgados hacia arriba), reduce a ≤1024 px y luego a mitades, rellena blanco
@@ -79,7 +91,9 @@ PLAYWRIGHT_MODULE=/opt/node22/lib/node_modules/playwright SHOTS_DIR=/tmp/captura
 
 `tests/e2e.js` cubre: migración v1→perfiles, ejemplos, sugerencia por batería, captura relativa, pasos/estrellas/deshacer,
 vaciar la cabeza, rutinas, búsqueda sin tildes, enfoque + ruido marrón, logro manual, aviso vencido + posponer + insistencia,
-perfiles (crear, aislar datos, aviso cruzado, volver, borrar y deshacer), foto de perfil (recorte a 192 px, deshacer, cancelar,
+perfiles (crear, aislar datos, volver, borrar y deshacer), un solo perfil avisa (por defecto el abierto; «Siempre X» con tarjeta
+externa, posponer, «Ir a X», rutina diaria del elegido, tarjeta obsoleta entre pestañas, texto honesto en silencio, salir del
+perfil que avisa con su aviso en pantalla, flechas por el selector sin gastar avisos, borrar el elegido), foto de perfil (recorte a 192 px, deshacer, cancelar,
 archivos no válidos, foco tras «Quitar foto», crear antes de que termine la decodificación, foto manipulada en el almacenamiento,
 almacenamiento lleno y bloqueado), modo oscuro sin desbordes a 360 px y cero errores JS.
 La guía para publicar en GitHub Pages está en el README.
@@ -91,6 +105,10 @@ La guía para publicar en GitHub Pages está en el README.
 - Sin sincronización entre dispositivos (solo copia/restauración manual por perfil). Perfiles sin contraseña.
 - El parser de captura es heurístico: «a las 1–6» sin «de la mañana» se entiende como tarde (13–18 h). No entiende fechas como «el 15».
 - `.ics` no pliega líneas de más de 75 octetos (los calendarios principales lo toleran).
+- Hecho en v1.3: un solo perfil recibe los avisos (revisado con 3 revisores + verificación adversarial; 8 problemas confirmados
+  y corregidos, más los avisos cortos que tapaban la cabecera).
+- En el modo «el perfil que esté abierto», dos ventanas abiertas en perfiles distintos suenan cada una el suyo (es lo que pide el modo).
+- Las pruebas e2e nunca deben pasar un ElementHandle a `assert` (usar `exists()`): formatear el error agota la memoria.
 - Hecho en v1.2: foto de perfil (revisada con 4 revisores + verificación adversarial; 6 problemas confirmados y corregidos).
 - Si una pestaña con la versión anterior (sin fotos) sigue abierta y guarda la lista de perfiles, las fotos se pierden
   (esa versión no conoce el campo). Es transitorio tras actualizar; recargar las pestañas viejas lo evita.

@@ -107,6 +107,7 @@
     check: svg('<path d="M5 12.5l4.2 4.2L19 7"/>'),
     star: svg('<path d="M12 3.6l2.55 5.2 5.75.83-4.16 4.05.98 5.72L12 16.7l-5.12 2.7.98-5.72L3.7 9.63l5.75-.83z"/>'),
     bell: svg('<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'),
+    bellOff: svg('<path d="M6 16.5V11a6 6 0 0 1 9.4-4.9M18 11v5.5l1.5 1.5H9"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path d="M4 4l16 16"/>'),
     clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
     repeat: svg('<path d="M4 11V9a3 3 0 0 1 3-3h11"/><path d="m15 3 3 3-3 3"/><path d="M20 13v2a3 3 0 0 1-3 3H6"/><path d="m9 21-3-3 3-3"/>'),
     steps: svg('<path d="M4 18h5v-5h5V8h6"/>'),
@@ -144,10 +145,16 @@
       return item;
     });
     if (!meta.list.some(p => p.id === meta.active)) meta.active = meta.list[0].id;
+    if (meta.notify !== 'active' && !meta.list.some(p => p.id === meta.notify)) meta.notify = 'active';
     return meta;
   }
   const saveProfiles = () => store.set(PROFILES_KEY, JSON.stringify(profiles));
   const currentProfile = () => profiles.list.find(p => p.id === profiles.active);
+  const profileById = id => profiles.list.find(p => p.id === id);
+  // Solo avisa un perfil (L.notifyTarget). Los demás quedan en silencio.
+  const notifyTargetId = () => L.notifyTarget(profiles);
+  const activeNotifies = () => notifyTargetId() === profiles.active;
+  const activeMuted = () => profiles.list.length > 1 && !activeNotifies();
 
   function readProfileState(id) {
     try {
@@ -261,6 +268,8 @@
     photoToasts: [],
     creatingProfile: false,
     reminderQueue: [],
+    extQueue: [], // avisos del perfil elegido cuando está abierto otro: [{ pid, taskId }]
+    notifyPending: null, // elección en el selector aún sin aplicar (se aplica al parar, al cerrar o al pulsar otra cosa)
     remNote: '',
     focusNote: '',
     focusDoneMsg: '',
@@ -312,14 +321,16 @@
   let shownProfile = {};
   function renderHeader() {
     const p = currentProfile();
-    if (p.id !== shownProfile.id || p.name !== shownProfile.name || p.color !== shownProfile.color || p.photo !== shownProfile.photo) {
-      shownProfile = { id: p.id, name: p.name, color: p.color, photo: p.photo };
+    const muted = activeMuted();
+    if (p.id !== shownProfile.id || p.name !== shownProfile.name || p.color !== shownProfile.color || p.photo !== shownProfile.photo || muted !== shownProfile.muted) {
+      shownProfile = { id: p.id, name: p.name, color: p.color, photo: p.photo, muted };
       const av = $('profileAvatar');
       av.style.background = safeColor(p.color);
       av.classList.toggle('has-photo', !!p.photo);
       av.innerHTML = avatarInner(p);
       $('profileName').textContent = p.name;
-      $('profileBtn').setAttribute('aria-label', `Perfil: ${p.name}. Cambiar de perfil`);
+      $('profileMute').hidden = !muted;
+      $('profileBtn').setAttribute('aria-label', `Perfil: ${p.name}${muted ? ', avisos en silencio' : ''}. Cambiar de perfil`);
     }
     $('captureInput').placeholder = pickDaily(PLACEHOLDERS);
   }
@@ -417,6 +428,7 @@
       <div class="field"><label class="field-label" for="rem-${id}">Recordatorio</label>
         <input class="input" type="datetime-local" id="rem-${id}" data-field="remindAt" value="${L.toLocalInput(t.remindAt)}">
         <div class="quick">${quickButtons(t)}</div>
+        ${activeMuted() ? `<p class="hint">${ICON.bellOff} Este perfil está en silencio: no sonará mientras avise «${esc((profileById(notifyTargetId()) || {}).name)}».</p>` : ''}
       </div>
       <label class="field"><span class="field-label">Repetir</span>
         <select class="input" id="rep-${id}" data-field="repeat">${Object.entries(REPEAT).map(([k, v]) => `<option value="${k}" ${k === t.repeat ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
@@ -460,7 +472,10 @@
       ? `<ul class="glance">${glance.map(([cls, text, action]) => `<li class="${cls}"><span class="dot"></span>${action ? `<button data-action="${action}">${text}</button>` : `<span>${text}</span>`}</li>`).join('')}</ul>`
       : '<p>Todo tranquilo. Anota algo arriba si se te ocurre, o descansa.</p>';
 
-    const needsNotif = !EMBEDDED && 'Notification' in window && Notification.permission === 'default' && pending.some(t => t.remindAt);
+    const muted = activeMuted();
+    const needsNotif = !muted && !EMBEDDED && 'Notification' in window && Notification.permission === 'default' && pending.some(t => t.remindAt);
+    const mutedBanner = !muted ? '' : `<div class="banner"><p>${ICON.bellOff} Este perfil está en silencio: ahora solo avisa «${esc((profileById(notifyTargetId()) || {}).name)}». Sus tareas vencidas siguen apareciendo aquí.</p>
+      <button class="btn sm" id="notifyHere" data-action="notify-here">Que avise este perfil</button></div>`;
 
     return `
       <section class="hello" aria-labelledby="hello-h">
@@ -469,6 +484,7 @@
         <p class="margin-note">${esc(pickDaily(MSG.daily))}</p>
         <div class="panel"><p class="eyebrow">Tu día en un vistazo</p>${glanceHtml}</div>
       </section>
+      ${mutedBanner}
       ${examplesBanner()}
       ${needsNotif ? `<div class="banner"><p>Tienes tareas con aviso. Activa los avisos para que Pasito te llame aunque estés en otra pestaña.</p><button class="btn primary sm" data-action="notif-enable">Activar avisos</button></div>` : ''}
 
@@ -766,6 +782,7 @@
           ${perm === 'default' ? '<button class="btn primary" data-action="notif-enable">Activar avisos</button>' : ''}
           <button class="btn" data-action="notif-test">Probar un aviso</button>
         </div>
+        ${profiles.list.length > 1 ? `<p class="hint">${ICON.bell} Avisa: <strong>${profiles.notify === 'active' ? 'el perfil que esté abierto' : `siempre ${esc((profileById(notifyTargetId()) || {}).name)}`}</strong>. <button class="btn sm ghost" data-action="go-profiles">Cambiar</button></p>` : ''}
         <label class="switch"><input type="checkbox" id="setNag" ${s.nag ? 'checked' : ''}><span>Insistir si no respondo (hasta 2 veces, cada 10 min)</span></label>
         ${EMBEDDED ? '' : '<p class="hint">Con el navegador cerrado ninguna web puede avisarte. Para lo importante, abre la tarea y usa «Añadir a mi calendario».</p>'}
       </div>
@@ -828,7 +845,27 @@
     </div>`;
   }
 
+  function notifyChooser() {
+    if (profiles.list.length < 2) return '';
+    const chosen = ui.notifyPending === null ? profiles.notify : ui.notifyPending;
+    const mode = chosen === 'active' ? 'active' : L.notifyTarget(Object.assign({}, profiles, { notify: chosen }));
+    const opt = (value, id, body) => `<label class="notify-opt"><input type="radio" name="notifyTarget" id="${id}" value="${value}" ${mode === value ? 'checked' : ''}>${body}</label>`;
+    return `<fieldset class="set-group"><legend>¿Quién recibe los avisos?</legend>
+      <p class="hint">Pasito es para una persona a la vez: solo suenan los avisos de un perfil. Los demás quedan en silencio y sus tareas vencidas aparecen en «Se pasó la hora» al abrirlos.</p>
+      <div class="notify-list">
+        ${opt('active', 'nt-active', '<span class="notify-text"><strong>El perfil que esté abierto</strong><span class="hint">Los avisos cambian contigo al cambiar de perfil.</span></span>')}
+        ${profiles.list.map(p => opt(p.id, `nt-${p.id}`, `${avatar(p)}<span class="notify-text"><strong>Siempre ${esc(p.name)}</strong><span class="hint">Aunque esté abierto otro perfil.</span></span>`)).join('')}
+      </div>
+    </fieldset>`;
+  }
+
+  function refreshNotifyBadges() {
+    const target = ui.notifyPending === null ? notifyTargetId() : L.notifyTarget(Object.assign({}, profiles, { notify: ui.notifyPending }));
+    document.querySelectorAll('.bell-badge[data-pid]').forEach(b => { b.hidden = profiles.list.length < 2 || b.dataset.pid !== target; });
+  }
+
   function profilesSheet() {
+    const target = notifyTargetId();
     const used = new Set(profiles.list.map(p => p.color));
     const nextColor = (PROFILE_COLORS.find(([c]) => !used.has(c)) || PROFILE_COLORS[0])[0];
     const items = profiles.list.map(p => {
@@ -850,7 +887,7 @@
       const stars = data ? Number(data.stars) || 0 : 0;
       return `<li class="profile-item">
         <button class="profile-pick" id="pp-${p.id}" data-action="profile-switch" data-pid="${p.id}" aria-pressed="${active}">
-          ${avatar(p)}<span class="pinfo"><span class="pname">${esc(p.name)}${active ? '<span class="sr-only"> (en uso)</span>' : ''}</span><span class="hint">${plural(pending, 'pendiente', 'pendientes')} · ${stars} ★</span></span>
+          <span class="avatar-wrap">${avatar(p)}<span class="bell-badge" data-pid="${p.id}" ${target === p.id && profiles.list.length > 1 ? '' : 'hidden'}>${ICON.bell}<span class="sr-only">, recibe los avisos</span></span></span><span class="pinfo"><span class="pname">${esc(p.name)}${active ? '<span class="sr-only"> (en uso)</span>' : ''}</span><span class="hint">${plural(pending, 'pendiente', 'pendientes')} · ${stars} ★</span></span>
         </button>
         <button class="btn sm ghost" id="pe-${p.id}" data-action="profile-edit" data-pid="${p.id}">Editar</button>
       </li>`;
@@ -858,8 +895,9 @@
     return `
       <div class="set-group"><h3>¿Quién usa Pasito ahora?</h3>
         <ul class="profile-list">${items}</ul>
-        <p class="hint">Toca «Editar» para cambiar el nombre, la foto o el color. Cada perfil tiene sus propias listas, avisos, estrellas y ajustes: sirve para compartir el dispositivo o para separar, por ejemplo, trabajo y casa. Los avisos de los demás perfiles también te llegan.</p>
+        <p class="hint">Toca «Editar» para cambiar el nombre, la foto o el color. Cada perfil tiene sus propias listas, avisos, estrellas y ajustes: sirve para compartir el dispositivo o para separar, por ejemplo, trabajo y casa.</p>
       </div>
+      ${notifyChooser()}
       <form class="set-group" id="profileNewForm" autocomplete="off"><h3>Nuevo perfil</h3>
         <label class="field"><span class="field-label">Nombre</span><input class="input" id="pnName" maxlength="24" placeholder="Ej.: Trabajo, Casa, Ana"></label>
         ${photoField('pn', { name: '', color: nextColor, photo: ui.photoDraft })}
@@ -889,6 +927,7 @@
   }
   function closeSheet() {
     if (!ui.sheet) return;
+    flushNotifyTarget();
     const opener = ui.sheetOpener;
     ui.sheet = null;
     ui.confirm = null;
@@ -1160,7 +1199,7 @@
     ui.reminderQueue = ui.reminderQueue.filter(x => x !== t.id);
     save();
     render();
-    toast(date ? `Te aviso ${L.fmtWhen(t.remindAt)}.` : 'Hora quitada. La tarea sigue en tu lista.');
+    toast(date ? remindPromise(t.remindAt) : 'Hora quitada. La tarea sigue en tu lista.');
   }
 
   function addTask(fields) {
@@ -1251,6 +1290,13 @@
   function activateProfile(id, saveCurrent) {
     const p = profiles.list.find(x => x.id === id);
     if (!p) return;
+    clearTimeout(notifyTimer);
+    if (ui.notifyPending !== null) {
+      profiles.notify = ui.notifyPending === 'active' || profileById(ui.notifyPending) ? ui.notifyPending : 'active';
+      ui.notifyPending = null;
+    }
+    const leaving = profiles.active;
+    const leavingQueue = ui.reminderQueue.slice();
     let paused = false;
     if (saveCurrent) {
       paused = pauseFocusQuietly();
@@ -1259,7 +1305,14 @@
     profiles.active = id;
     saveProfiles();
     state = loadState(id) || freshState(false);
+    const arrived = ui.extQueue.filter(x => x.pid === id).map(x => x.taskId);
     resetUi();
+    ui.extQueue = ui.extQueue.filter(x => x.pid !== id && x.pid === notifyTargetId());
+    arrived.forEach(tid => { const x = byId(tid); if (x && !x.done && !ui.reminderQueue.includes(tid)) ui.reminderQueue.push(tid); });
+    // Si el perfil que se deja es el que avisa, sus avisos en pantalla siguen visibles como avisos de otro perfil.
+    if (leaving !== id && notifyTargetId() === leaving) {
+      leavingQueue.forEach(taskId => { if (!ui.extQueue.some(x => x.pid === leaving && x.taskId === taskId)) ui.extQueue.push({ pid: leaving, taskId }); });
+    }
     ui.tab = 'hoy';
     try { history.replaceState(null, '', '#hoy'); } catch (e) { /* sin historial */ }
     clearToasts();
@@ -1430,7 +1483,10 @@
     const meta = profiles.list[idx];
     const wasActive = id === profiles.active;
     const raw = wasActive ? JSON.stringify(state) : store.get(stateKey(id));
+    const wasTarget = profiles.notify === id;
     profiles.list.splice(idx, 1);
+    if (wasTarget) profiles.notify = 'active';
+    ui.extQueue = ui.extQueue.filter(x => x.pid !== id);
     store.remove(stateKey(id));
     ui.confirm = null;
     ui.editProfile = null;
@@ -1438,6 +1494,7 @@
     else {
       saveProfiles();
       renderSheet();
+      render(); // cabecera, aviso de silencio y tarjeta de aviso pueden haber cambiado
     }
     toast(`Perfil «${meta.name}» borrado.`, {
       action: {
@@ -1446,49 +1503,116 @@
           if (profiles.list.some(x => x.id === id)) return;
           profiles.list.splice(Math.min(idx, profiles.list.length), 0, meta);
           if (raw) store.set(stateKey(id), raw);
+          if (wasTarget) profiles.notify = id;
           saveProfiles();
           renderSheet();
+          render();
           toast(`Perfil «${meta.name}» recuperado.`);
         },
       },
     });
   }
 
-  // Avisos de los perfiles que no están abiertos: se muestran con su nombre.
+  // Avisos del perfil elegido cuando está abierto otro: la misma tarjeta de aviso, con su nombre y su insistencia.
+  // Devuelve true si cambió algo que haya que pintar.
   function checkOtherProfiles(now) {
-    if (profiles.list.length < 2) return;
-    for (const p of profiles.list) {
-      if (p.id === profiles.active) continue;
-      const data = readProfileState(p.id);
-      if (!data) continue;
-      let changed = false;
-      for (const t of data.tasks) {
-        if (!t || t.done || !t.remindAt || t.notified) continue;
+    const target = notifyTargetId();
+    if (!target || target === profiles.active) return false;
+    const p = profileById(target);
+    const data = readProfileState(target);
+    if (!p || !data) return false;
+    const nag = !data.settings || data.settings.nag !== false;
+    let changed = false;
+    let fired = false;
+    for (const t of data.tasks) {
+      if (resetIfDue(t, now)) changed = true; // rutinas del perfil elegido, aunque no esté abierto
+      if (!t || t.done || !t.remindAt) continue;
+      let ring = false;
+      if (!t.notified) {
         const at = Date.parse(t.remindAt);
         if (!(at <= now)) continue;
         t.notified = true;
         changed = true;
-        if (now - at < 6 * HOUR) {
-          chime('reminder');
-          vibrate([120, 80, 120]);
-          toast(`Aviso para ${p.name}: ${t.title}`, {
-            action: {
-              label: `Ir a ${p.name}`,
-              run: () => {
-                activateProfile(p.id, true);
-                const x = byId(t.id);
-                if (x && !x.done) {
-                  ui.reminderQueue.push(x.id);
-                  renderReminder();
-                }
-              },
-            },
-          });
-          if (!document.hasFocus()) systemNotify(`${p.name} · ${t.title}`, 'Abre Pasito para verlo.', t.id, true);
+        ring = now - at < 6 * HOUR;
+      } else if (t.nagAt && Date.parse(t.nagAt) <= now) {
+        t.nagAt = null;
+        changed = true;
+        if (nag && (t.nags || 0) < NAG_MAX) {
+          t.nags = (t.nags || 0) + 1;
+          ring = true;
         }
       }
-      if (changed) store.set(stateKey(p.id), JSON.stringify(data));
+      if (!ring) continue;
+      t.nagAt = nag && (t.nags || 0) < NAG_MAX ? new Date(now + NAG_EVERY).toISOString() : null;
+      if (!ui.extQueue.some(x => x.pid === target && x.taskId === t.id)) ui.extQueue.push({ pid: target, taskId: t.id });
+      fired = true;
+      const next = (t.steps || []).find(st => st && !st.done);
+      if (!document.hasFocus()) systemNotify(`${p.name} · ${t.title}`, next ? `Empieza por: ${next.text}` : 'Abre Pasito para verlo.', t.id, true);
     }
+    if (changed) store.set(stateKey(target), JSON.stringify(data));
+    if (fired) {
+      ui.remNote = pick(MSG.reminder);
+      chime('reminder');
+      vibrate([120, 80, 120]);
+    }
+    return changed;
+  }
+
+  // Primer aviso externo que sigue vigente (descarta los de tareas ya hechas o borradas).
+  function nextExternal() {
+    while (ui.extQueue.length) {
+      const { pid, taskId } = ui.extQueue[0];
+      const p = pid !== profiles.active ? profileById(pid) : null;
+      const data = p ? readProfileState(pid) : null;
+      const task = data ? data.tasks.find(x => x && x.id === taskId) : null;
+      if (task && !task.done) return { p, task };
+      ui.extQueue.shift();
+    }
+    return null;
+  }
+
+  function updateExternalTask(item, fn) {
+    const data = readProfileState(item.pid);
+    const task = data ? data.tasks.find(x => x && x.id === item.taskId) : null;
+    if (!task || task.done) return null; // la terminaron en otra pestaña: no tocarla
+    fn(task);
+    store.set(stateKey(item.pid), JSON.stringify(data));
+    return task;
+  }
+
+  // El perfil abierto que pasa a silencio no pierde nada: tick() lo salta y su tarjeta se oculta hasta que vuelva a avisar.
+  function setNotifyTarget(value) {
+    clearTimeout(notifyTimer);
+    ui.notifyPending = null;
+    profiles.notify = value === 'active' || profileById(value) ? value : 'active';
+    if (!saveProfiles()) warnStorage();
+    const target = notifyTargetId();
+    ui.extQueue = ui.extQueue.filter(x => x.pid === target && target !== profiles.active);
+    refreshNotifyBadges();
+    render();
+    tick(); // si el perfil elegido tiene avisos pendientes, llegan ya
+    toast(profiles.notify === 'active' ? 'Avisará el perfil que esté abierto.' : `Ahora solo avisa «${profileById(target).name}».`);
+  }
+
+  // Con las flechas del teclado cada opción del grupo se marca al pasar por ella: se espera a que el cambio se asiente,
+  // para no hacer sonar (ni dar por avisados) perfiles por los que solo se pasaba.
+  let notifyTimer = null;
+  function chooseNotifyTarget(value) {
+    ui.notifyPending = value;
+    refreshNotifyBadges();
+    clearTimeout(notifyTimer);
+    notifyTimer = setTimeout(flushNotifyTarget, 600);
+  }
+  function flushNotifyTarget() {
+    clearTimeout(notifyTimer);
+    if (ui.notifyPending === null) return;
+    setNotifyTarget(ui.notifyPending);
+  }
+
+  // Texto al poner una hora: en un perfil en silencio no se promete un aviso que no va a sonar.
+  function remindPromise(iso) {
+    if (!activeMuted()) return `Te aviso ${L.fmtWhen(iso)}.`;
+    return `Hora guardada (${L.fmtWhen(iso)}), pero este perfil está en silencio: ahora solo avisa «${(profileById(notifyTargetId()) || {}).name}».`;
   }
 
   /* ---------- Enfoque ---------- */
@@ -1680,10 +1804,30 @@
       if (t && !t.done) break;
       ui.reminderQueue.shift();
     }
-    const t = ui.reminderQueue.length ? byId(ui.reminderQueue[0]) : null;
+    const t = ui.reminderQueue.length && !activeMuted() ? byId(ui.reminderQueue[0]) : null;
     if (!t) {
-      el.hidden = true;
-      el.innerHTML = '';
+      const ext = nextExternal();
+      delete el.dataset.id;
+      if (!ext) {
+        el.hidden = true;
+        el.innerHTML = '';
+        liftToasts(null);
+        return;
+      }
+      const extNext = (ext.task.steps || []).find(st => st && !st.done);
+      el.innerHTML = `<p class="eyebrow">${ICON.bell}Aviso para ${avatar(ext.p, { cls: 'avatar-xs' })}${esc(ext.p.name)}</p>
+        <h2 id="remTitle">${esc(ext.task.title)}</h2>
+        ${extNext ? `<p class="s-step">${ICON.steps}Empieza por: <strong>${esc(extNext.text)}</strong></p>` : ''}
+        <p class="margin-note">${esc(ui.remNote)}</p>
+        <div class="row">
+          <button class="btn primary" data-action="ext-go">Ir a «${esc(ext.p.name)}»</button>
+          <button class="btn ghost" data-action="ext-snooze" data-min="10">En 10 min</button>
+          <button class="btn ghost" data-action="ext-snooze" data-min="60">En 1 hora</button>
+        </div>
+        ${ui.extQueue.length > 1 ? `<p class="hint">${plural(ui.extQueue.length - 1, 'aviso más espera', 'avisos más esperan')} después de este.</p>` : ''}
+        <button class="icon-btn" data-action="ext-close" aria-label="Cerrar aviso">${ICON.x}</button>`;
+      el.hidden = false;
+      liftToasts(el);
       return;
     }
     const next = t.steps.find(s => !s.done);
@@ -1701,6 +1845,24 @@
       ${ui.reminderQueue.length > 1 ? `<p class="hint">${plural(ui.reminderQueue.length - 1, 'aviso más espera', 'avisos más esperan')} después de este.</p>` : ''}
       <button class="icon-btn" data-action="rem-close" aria-label="Cerrar aviso">${ICON.x}</button>`;
     el.hidden = false;
+    liftToasts(el);
+  }
+
+  // Los avisos cortos van abajo; si hay una tarjeta de recordatorio, se colocan encima para no taparla.
+  function liftToasts(card) {
+    const root = document.documentElement;
+    if (card) root.style.setProperty('--toast-lift', `${card.offsetHeight + 8}px`);
+    else root.style.removeProperty('--toast-lift');
+  }
+
+  // Vuelve a pendiente una tarea repetida cuando le toca, con sus pasos. Sirve para cualquier perfil (datos en bruto).
+  function resetIfDue(t, now) {
+    if (!t || !L.shouldReset(t, now)) return false;
+    t.done = false;
+    t.doneAt = null;
+    t.prevRemindAt = null;
+    (t.steps || []).forEach(st => { if (st) st.done = false; });
+    return true;
   }
 
   function housekeeping() {
@@ -1708,13 +1870,7 @@
     const today = todayKey();
     let changed = false;
     for (const t of state.tasks) {
-      if (L.shouldReset(t, n)) {
-        t.done = false;
-        t.doneAt = null;
-        t.prevRemindAt = null;
-        t.steps.forEach(s => { s.done = false; });
-        changed = true;
-      }
+      if (resetIfDue(t, n)) changed = true;
       if (t.done && t.today && t.repeat === 'none' && t.doneAt && L.dayKey(t.doneAt) < today) {
         t.today = false;
         changed = true;
@@ -1736,7 +1892,8 @@
   function tick() {
     const n = Date.now();
     let changed = housekeeping() || ui.renderDay !== todayKey();
-    for (const t of state.tasks) {
+    // Un perfil en silencio no suena: sus avisos quedan pendientes y sus vencidas se ven en «Se pasó la hora».
+    for (const t of activeNotifies() ? state.tasks : []) {
       if (t.done || !t.remindAt) continue;
       if (!t.notified) {
         const at = Date.parse(t.remindAt);
@@ -1755,8 +1912,11 @@
         }
       }
     }
-    checkOtherProfiles(n);
-    if (!changed) return;
+    const extChanged = checkOtherProfiles(n);
+    if (!changed) {
+      if (extChanged) renderReminder();
+      return;
+    }
     save();
     if (isTyping()) renderReminder();
     else render();
@@ -1977,6 +2137,38 @@
       }
       renderReminder();
     },
+    'ext-go'() {
+      const item = ui.extQueue[0];
+      if (!item) return;
+      activateProfile(item.pid, true); // sus avisos pasan a la cola normal del perfil
+      const x = byId(item.taskId);
+      if (x) {
+        clearNag(x);
+        save();
+      }
+      renderReminder();
+    },
+    'ext-snooze'(t, btn) {
+      const item = ui.extQueue.shift();
+      if (!item) return;
+      const task = updateExternalTask(item, x => {
+        x.remindAt = new Date(Date.now() + Number(btn.dataset.min) * MIN).toISOString();
+        x.notified = false;
+        x.nagAt = null;
+        x.nags = 0;
+        x.snoozes = (x.snoozes || 0) + 1;
+      });
+      renderReminder();
+      const p = profileById(item.pid);
+      if (task && p) toast(`Aviso para ${p.name}: te aviso ${L.fmtWhen(task.remindAt)}.`);
+    },
+    'ext-close'() {
+      const item = ui.extQueue.shift();
+      if (item) updateExternalTask(item, x => { x.nagAt = null; x.nags = 0; });
+      renderReminder();
+    },
+    'notify-here'() { setNotifyTarget(profiles.active); },
+    'go-profiles'() { openSheet('profiles', $('profileBtn')); },
     'toast-act'(t, btn) {
       const run = toastActions.get(btn.dataset.toast);
       removeToast(btn.dataset.toast);
@@ -2105,6 +2297,7 @@
     }
     const btn = e.target.closest('[data-action]');
     if (!btn || !actions[btn.dataset.action]) return;
+    if (ui.notifyPending !== null) flushNotifyTarget();
     const holder = btn.closest('[data-id]');
     actions[btn.dataset.action](holder ? byId(holder.dataset.id) : null, btn, e);
   });
@@ -2124,7 +2317,7 @@
       save();
       render();
       let msg = pick(MSG.capture);
-      if (parsed.remindAt) msg += ` Te aviso ${L.fmtWhen(parsed.remindAt)}.`;
+      if (parsed.remindAt) msg += ` ${remindPromise(parsed.remindAt)}`;
       else if (parsed.today) msg += ' Está en tu foco de hoy.';
       toast(msg, { hand: true, action: { label: 'Detalles', run: () => openTask(t.id) } });
     },
@@ -2145,7 +2338,7 @@
       ui.filter = INBOX;
       save();
       render();
-      toast(`${plural(lines.length, 'idea guardada', 'ideas guardadas')}${withReminder ? ` (${withReminder} con aviso)` : ''}. Tu cabeza te lo agradece.`, { hand: true });
+      toast(`${plural(lines.length, 'idea guardada', 'ideas guardadas')}${withReminder ? ` (${withReminder} con aviso)` : ''}. Tu cabeza te lo agradece.${withReminder && activeMuted() ? ' Este perfil está en silencio: sus avisos no sonarán.' : ''}`, { hand: true });
     },
     winForm() {
       const input = $('winInput');
@@ -2265,6 +2458,10 @@
       }
       return;
     }
+    if (el.name === 'notifyTarget') {
+      chooseNotifyTarget(el.value);
+      return;
+    }
     if (el.name === 'pnColor' || el.name === 'peColor') {
       refreshPhotoPreview(el.name.slice(0, 2));
       return;
@@ -2338,7 +2535,11 @@
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       if (ui.sheet) closeSheet();
-      else if (!$('reminder').hidden) actions['rem-close'](byId($('reminder').dataset.id));
+      else if (!$('reminder').hidden) {
+        const rid = $('reminder').dataset.id;
+        if (rid) actions['rem-close'](byId(rid));
+        else actions['ext-close']();
+      }
       return;
     }
     // Mantiene el foco del teclado dentro de la hoja abierta.
@@ -2389,12 +2590,19 @@
       ensureTimer();
       if (isTyping()) renderReminder();
       else render();
+    } else if (e.key && e.key === stateKey(notifyTargetId()) && notifyTargetId() !== profiles.active) {
+      renderReminder(); // otra pestaña cambió el perfil que avisa: quitar tarjetas de tareas ya hechas
     } else if (e.key === PROFILES_KEY) {
       const keep = profiles.active;
       profiles = loadProfiles();
       if (profiles.list.some(p => p.id === keep)) profiles.active = keep;
-      renderHeader();
+      const target = notifyTargetId();
+      ui.extQueue = ui.extQueue.filter(x => x.pid === target && target !== profiles.active);
       renderSheet();
+      if (isTyping()) {
+        renderHeader();
+        renderReminder();
+      } else render();
     }
   });
 
