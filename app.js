@@ -187,27 +187,17 @@
     }, fields);
   }
 
-  function exampleTasks() {
-    const steps = list => list.map(text => ({ id: uid(), text, done: false }));
-    return [
-      makeTask({ title: 'Beber un vaso de agua', energy: 'low', minutes: 5, today: true, list: 'Personal', example: true }),
-      makeTask({ title: 'Ordenar el escritorio', energy: 'med', minutes: 15, today: true, list: 'Casa', example: true, steps: steps(['Tirar lo que sea basura', 'Guardar 5 cosas', 'Limpiar la superficie']) }),
-      makeTask({ title: 'Pedir cita con el médico', energy: 'med', minutes: 10, list: 'Personal', remindAt: L.nextAt(17), example: true, steps: steps(['Buscar el número', 'Llamar', 'Apuntar la fecha en la agenda']) }),
-      makeTask({ title: 'Preparar la presentación', energy: 'high', minutes: 45, list: 'Trabajo / estudio', example: true }),
-      makeTask({ title: 'Responder un correo pendiente', energy: 'low', minutes: 10, example: true }),
-    ];
-  }
-
-  function freshState(withExamples) {
+  // withIntro: perfil recién creado en este dispositivo → bienvenida guiada (viewIntro) hasta que se termine o se salte.
+  function freshState(withIntro) {
     return {
       version: 2,
       lists: [INBOX, 'Personal', 'Casa', 'Trabajo / estudio'],
-      tasks: withExamples ? exampleTasks() : [],
+      tasks: [],
       log: [],
       stars: 0,
       battery: null,
       focus: { taskId: null, minutes: 15, lastMinutes: 15, isBreak: false, phase: 'idle', endAt: null, remaining: null, total: null },
-      settings: { sound: true, calm: false, theme: 'system', nag: true, goal: 3 },
+      settings: { sound: true, calm: false, theme: 'system', nag: true, goal: 3, introDone: !withIntro },
       lastVisit: Date.now(),
     };
   }
@@ -217,6 +207,7 @@
     const s = Object.assign(base, data, { version: 2 });
     s.settings = Object.assign(freshState(false).settings, data.settings);
     s.settings.goal = Math.min(5, Math.max(1, Number(s.settings.goal) || 3));
+    s.settings.introDone = s.settings.introDone !== false; // los perfiles anteriores a la bienvenida no la ven
     s.focus = Object.assign(freshState(false).focus, data.focus);
     s.lists = Array.isArray(data.lists) && data.lists.length ? data.lists.map(String) : freshState(false).lists;
     if (!s.lists.includes(INBOX)) s.lists.unshift(INBOX);
@@ -272,6 +263,7 @@
     suggestId: null,
     skipped: new Set(),
     confirm: null,
+    intro: null,
     sheet: null,
     sheetOpener: null,
     editProfile: null,
@@ -295,7 +287,7 @@
   function resetUi() {
     Object.assign(ui, {
       filter: 'all', showDone: false, newList: false, panel: null, search: '', suggesting: false, suggestId: null,
-      confirm: null, editProfile: null, reminderQueue: [], focusNote: '', focusDoneMsg: '', noteSlot: 0,
+      confirm: null, editProfile: null, reminderQueue: [], focusNote: '', focusDoneMsg: '', noteSlot: 0, intro: null,
     });
     ui.open.clear();
     ui.skipped.clear();
@@ -316,7 +308,8 @@
       b.setAttribute('aria-current', b.dataset.tab === ui.tab ? 'page' : 'false');
       b.classList.toggle('is-live', b.dataset.tab === 'enfoque' && state.focus.phase === 'running');
     });
-    view.innerHTML = { hoy: viewHoy, tareas: viewTareas, enfoque: viewEnfoque, logros: viewLogros }[ui.tab]();
+    document.body.classList.toggle('is-intro', introActive());
+    view.innerHTML = introActive() ? viewIntro() : { hoy: viewHoy, tareas: viewTareas, enfoque: viewEnfoque, logros: viewLogros }[ui.tab]();
     renderReminder();
     paintTimer();
     // El contenido se rehace entero: devolvemos el foco (y el cursor) al control equivalente.
@@ -456,6 +449,219 @@
   }
 
   /* ----- Hoy ----- */
+
+  /* ---------- Bienvenida guiada (primer uso) ---------- */
+  // Tres preguntas que convierten lo que la persona tiene en la cabeza en sus primeras tareas: nada viene hecho.
+  const INTRO_STEPS = 3;
+  const INTRO_WIN = 'Empezar con Pasito';
+  const introActive = () => !state.settings.introDone;
+  // El progreso vive en el estado del perfil (settings.intro = { step, ids, smallId, newSmall }) para seguir donde se dejó
+  // tras recargar, cambiar de perfil o restaurar; los borradores de texto, solo en memoria.
+  function intro() {
+    if (!ui.intro) {
+      const saved = state.settings.intro || {};
+      ui.intro = {
+        step: Math.max(0, Math.min(INTRO_STEPS + 1, Number(saved.step) || 0)),
+        ids: (Array.isArray(saved.ids) ? saved.ids : []).filter(id => byId(id)),
+        smallId: saved.smallId && byId(saved.smallId) ? saved.smallId : null,
+        newSmall: saved.newSmall || null, // tarea creada desde el campo del paso 2 (se quita si se cambia de idea)
+        movedSmall: saved.movedSmall || null, // la elegida salió de la Bandeja: vuelve a ella si se cambia de idea
+        draft: { introTime: '09:00' },
+      };
+    }
+    return ui.intro;
+  }
+  function introPersist() {
+    const it = intro();
+    state.settings.intro = { step: it.step, ids: it.ids, smallId: it.smallId, newSmall: it.newSmall, movedSmall: it.movedSmall };
+  }
+  const introValue = (id, fallback = '') => (intro().draft[id] !== undefined ? intro().draft[id] : fallback);
+
+  function viewIntro() {
+    const it = intro();
+    const p = currentProfile();
+    const dv = id => esc(introValue(id));
+    const muted = activeMuted();
+    const who = esc((profileById(notifyTargetId()) || {}).name);
+    const made = it.ids.map(byId).filter(Boolean);
+    const nav = (next, skip) => `<div class="row intro-nav">
+        ${it.step > 0 ? '<button class="btn ghost" type="button" id="introBack" data-action="intro-back">Atrás</button>' : ''}
+        <button class="btn primary" type="submit" id="introNext">${next}</button>
+        ${skip ? `<button class="btn ghost" type="button" id="introSkipStep" data-action="intro-next">${skip}</button>` : ''}
+      </div>`;
+    const progress = it.step >= 1 && it.step <= INTRO_STEPS ? `<p class="eyebrow">Paso ${it.step} de ${INTRO_STEPS}</p>` : '';
+    const h1 = text => `<h1 class="view-title" id="intro-h" tabindex="-1">${text}</h1>`;
+    let body = '';
+    if (it.step === 0) {
+      body = `<p class="margin-note">Hola, soy Pasito.</p>
+        ${h1('Una lista para cerebros con TDAH')}
+        <p>Te ayudo a sacar las cosas de la cabeza, a elegir <strong>una sola</strong> y a celebrar cada pasito.</p>
+        <p>La vamos a montar con tus cosas, no con ejemplos: tres preguntas, dos minutos. Nada es obligatorio y todo se puede cambiar después.</p>
+        ${p.name === 'Yo' ? `<label class="field"><span class="field-label">¿Cómo quieres que te llame? (opcional)</span>
+          <input class="input" id="introName" maxlength="24" value="${dv('introName')}" placeholder="Tu nombre" autocomplete="given-name"></label>` : ''}
+        ${nav('Empezamos')}`;
+    } else if (it.step === 1) {
+      const saved = made.filter(t => t.list === INBOX && t.id !== it.smallId);
+      body = `${h1('¿Qué te da vueltas en la cabeza?')}
+        <p>Escríbelo tal cual salga, <strong>una cosa por línea</strong>. Sin ordenar ni decidir: eso lo hacemos después.</p>
+        ${saved.length ? `<p class="hint">Ya guardé en la Bandeja: ${saved.slice(0, 5).map(t => `«${esc(t.title)}»`).join(', ')}${saved.length > 5 ? '…' : ''}. Lo que escribas ahora se añade.</p>` : ''}
+        <label class="sr-only" for="introDump">Lo que tienes en la cabeza, una cosa por línea</label>
+        <textarea class="input" id="introDump" rows="6" placeholder="Ej.: llamar al banco&#10;ese correo que no contesto&#10;comprar pilas mañana a las 10">${dv('introDump')}</textarea>
+        <p class="hint">${muted ? `Si pones una hora, la guardo, pero este perfil está en silencio: ahora solo avisa «${who}».` : 'Si pones una hora («el viernes a las 9», «en 2 horas»), te aviso.'}</p>
+        ${nav(saved.length ? 'Añadir y seguir' : 'Siguiente', 'Ahora no se me ocurre nada')}`;
+    } else if (it.step === 2) {
+      const mine = made.filter(t => !t.done && t.repeat === 'none');
+      const cands = (mine.length ? mine : state.tasks.filter(t => !t.done)).slice(0, 8);
+      body = `${h1('¿Qué es lo más pequeño que podrías hacer hoy?')}
+        <p>Pequeño de verdad: cinco minutos o menos. Empezar por lo fácil es lo que engancha; lo demás puede esperar.</p>
+        ${cands.length ? `<div class="intro-chips" role="group" aria-label="Elige una de tus tareas">${cands.map(t => `<button type="button" class="chip-btn" id="introPick-${t.id}" data-action="intro-pick" data-id="${t.id}" aria-pressed="${it.smallId === t.id && !String(introValue('introSmall')).trim()}">${esc(t.title)}</button>`).join('')}</div>` : ''}
+        <label class="field"><span class="field-label">${cands.length ? 'O escribe otra cosa (sustituye a la elegida)' : 'Escríbela'}</span>
+          <input class="input" id="introSmall" maxlength="200" value="${dv('introSmall')}" placeholder="Ej.: beber un vaso de agua" aria-describedby="intro-h"></label>
+        ${nav('Siguiente', 'Lo elijo luego')}`;
+    } else if (it.step === 3) {
+      const routine = made.find(t => t.repeat === 'daily');
+      body = `${h1('¿Hay algo que necesites hacer cada día y se te olvide?')}
+        <p>Pastillas, comer, beber agua, salir a andar… ${muted ? 'Se repite cada día y la marcas con un toque (sonará cuando este perfil sea el que avisa).' : 'Te lo recuerdo cada día a su hora y lo marcas con un toque.'}</p>
+        ${routine ? `<p class="hint">Ya tienes «${esc(routine.title)}» cada día a las ${esc(L.fmtTime(routine.remindAt))}. Si escribes otra, se añade.</p>` : ''}
+        <div class="intro-row">
+          <label class="field"><span class="field-label">Qué</span><input class="input" id="introRoutine" maxlength="200" value="${dv('introRoutine')}" placeholder="Ej.: tomar la medicación" aria-describedby="intro-h"></label>
+          <label class="field"><span class="field-label">A qué hora</span><input class="input" type="time" id="introTime" value="${dv('introTime')}"></label>
+        </div>
+        ${nav('Siguiente', routine ? 'Con esa basta' : 'No tengo ninguna')}`;
+    } else {
+      const small = it.smallId && byId(it.smallId);
+      const routines = made.filter(t => t.repeat === 'daily');
+      const inbox = made.filter(t => t.list === INBOX).length;
+      const alarms = made.filter(t => t.remindAt && t.repeat === 'none').sort((a, b) => remindTime(a) - remindTime(b));
+      const items = [];
+      if (inbox) items.push(`<span>${plural(inbox, 'idea', 'ideas')} en la <strong>Bandeja</strong>, fuera de tu cabeza</span>`);
+      if (alarms.length) {
+        const one = alarms.length === 1;
+        items.push(`<span>${plural(alarms.length, 'aviso', 'avisos')} ${muted ? (one ? 'guardado' : 'guardados') : (one ? 'programado' : 'programados')}: «${esc(alarms[0].title)}» ${esc(L.fmtWhen(alarms[0].remindAt))}</span>`);
+      }
+      if (small) items.push(`<span>«${esc(small.title)}» en tu <strong>foco de hoy</strong></span>`);
+      routines.forEach(r => items.push(`<span>«${esc(r.title)}» cada día a las <strong>${esc(L.fmtTime(r.remindAt))}</strong></span>`));
+      const summary = items.length
+        ? `<ul class="glance">${items.map(x => `<li><span class="dot"></span>${x}</li>`).join('')}</ul>`
+        : state.tasks.some(t => !t.done)
+          ? '<p>No añadí nada nuevo; tus tareas siguen donde estaban.</p>'
+          : '<p>Empiezas con la lista vacía, y está bien. Cuando se te ocurra algo, lo anotas arriba y listo.</p>';
+      const needsNotif = !EMBEDDED && 'Notification' in window && Notification.permission === 'default' && made.some(t => t.remindAt) && !muted;
+      body = `<p class="margin-note">${introRewarded() ? 'Un repaso nunca sobra.' : '¡Primer pasito dado!'}</p>
+        ${h1('Ya está. Esto es lo que hay:')}
+        ${summary}
+        <div class="panel"><p class="eyebrow">Cómo se usa</p>
+          <ul class="intro-guide">
+            <li><strong>Arriba, el campo para anotar.</strong> Escribe y pulsa Enter. ${muted ? 'Si pones una hora, la guardo (este perfil está en silencio).' : 'Si pones una hora («mañana a las 10»), te aviso.'}</li>
+            <li><strong>Hoy</strong>: dime cómo está tu batería y te propongo <em>una</em> cosa, con su motivo. Lo que está en tu foco de hoy lleva una estrella.</li>
+            <li><strong>Tareas</strong>: todo lo demás, empezando por la Bandeja (lo que anotaste sin ordenar). Divide lo grande en pasos; cada paso suma estrellas.</li>
+            <li><strong>Enfoque</strong>: un temporizador corto para arrancar. Empezar es lo difícil.</li>
+            <li><strong>Logros</strong>: lo que ya hiciste. Sin rachas que se rompan ni culpas.</li>
+          </ul></div>
+        ${needsNotif ? '<div class="banner"><p>Pusiste avisos. Actívalos para que te llame aunque estés en otra pestaña.</p><button type="button" class="btn primary sm" data-action="notif-enable">Activar avisos</button></div>' : ''}
+        ${nav('Ir a Hoy')}`;
+    }
+    return `<section class="intro" aria-labelledby="intro-h">
+      <form id="introForm" autocomplete="off">${progress}${body}</form>
+      ${it.step <= INTRO_STEPS ? '<p class="intro-skip"><button class="btn ghost sm" id="introSkip" data-action="intro-skip">Saltar la bienvenida</button></p>' : ''}
+    </section>`;
+  }
+
+  const introRewarded = () => state.log.some(e => e.kind === 'win' && e.title === INTRO_WIN);
+
+  function introGo(step) {
+    intro().step = Math.max(0, Math.min(INTRO_STEPS + 1, step));
+    introPersist();
+    save();
+    render();
+    window.scrollTo(0, 0);
+    // Primero la pregunta (los lectores de pantalla la leen); en el ordenador, además, el cursor va al campo.
+    // En el móvil se toca el campo, para que el teclado no tape el texto.
+    const h = view.querySelector('#intro-h');
+    if (h) h.focus({ preventScroll: true });
+    const field = view.querySelector('#introName, #introDump, #introSmall, #introRoutine');
+    if (field && window.matchMedia('(hover: hover)').matches) field.focus({ preventScroll: true });
+  }
+
+  // Lee los campos del paso actual (por si el navegador solo avisó con `change`, como el selector de hora en iOS).
+  function introCollect() {
+    const d = intro().draft;
+    view.querySelectorAll('#introForm input[id^="intro"], #introForm textarea[id^="intro"]').forEach(el => { d[el.id] = el.value; });
+  }
+
+  // Guarda lo respondido en el paso actual (cada paso crea sus tareas al momento, así nada se pierde si se cierra).
+  function introApply() {
+    const it = intro();
+    const d = it.draft;
+    const now = new Date();
+    if (it.step === 0) {
+      const name = String(d.introName || '').trim().slice(0, 24);
+      const p = currentProfile();
+      if (name && name !== p.name) {
+        p.name = name;
+        saveProfiles();
+      }
+    } else if (it.step === 1) {
+      const lines = String(d.introDump || '').split(/\r?\n/).map(l => l.replace(/^\s*(?:[-*•·]|\d+[.)])\s+/, '').trim()).filter(Boolean).slice(0, 50);
+      let withReminder = 0;
+      lines.forEach(line => {
+        const pr = L.parseQuickInput(line, now);
+        if (pr.remindAt) withReminder++;
+        it.ids.push(addTask({ title: pr.title.slice(0, 200), remindAt: pr.remindAt, today: pr.today, list: INBOX }).id);
+      });
+      d.introDump = '';
+      if (lines.length) {
+        toast(`${plural(lines.length, 'idea', 'ideas')} fuera de tu cabeza${withReminder ? ` (${withReminder} con aviso)` : ''}. Ya no tienes que recordarlas.${withReminder && activeMuted() ? ' Este perfil está en silencio: sus avisos no sonarán.' : ''}`, { hand: true });
+      }
+    } else if (it.step === 2) {
+      const text = String(d.introSmall || '').trim().slice(0, 200);
+      const prev = it.smallId && byId(it.smallId);
+      const t = text ? addTask({ title: text, list: 'Personal' }) : prev;
+      if (t) {
+        // Cambió de idea al volver atrás: la elección anterior deja el foco de hoy (y, si la escribió aquí, desaparece).
+        if (prev && prev !== t) {
+          if (prev.id === it.newSmall) {
+            state.tasks = state.tasks.filter(x => x !== prev);
+            it.ids = it.ids.filter(id => id !== prev.id);
+          } else Object.assign(prev, { today: false, list: prev.id === it.movedSmall ? INBOX : prev.list });
+          it.newSmall = null;
+          it.movedSmall = null;
+        }
+        if (t.list === INBOX) it.movedSmall = t.id;
+        Object.assign(t, { today: true, energy: 'low', minutes: t.minutes || 5, list: t.list === INBOX ? 'Personal' : t.list });
+        if (!it.ids.includes(t.id)) it.ids.push(t.id);
+        if (text) it.newSmall = t.id;
+        it.smallId = t.id;
+        d.introSmall = '';
+      }
+    } else if (it.step === 3) {
+      const text = String(d.introRoutine || '').trim().slice(0, 200);
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(d.introTime || ''));
+      const ok = m && Number(m[1]) <= 23 && Number(m[2]) <= 59;
+      if (text) {
+        const [h, mi] = ok ? [Number(m[1]), Number(m[2])] : [9, 0];
+        it.ids.push(addTask({ title: text, list: 'Personal', energy: 'low', minutes: 5, repeat: 'daily', remindAt: L.nextAt(h, mi) }).id);
+        d.introRoutine = '';
+      }
+    }
+    introPersist();
+    save();
+  }
+
+  function finishIntro(completed) {
+    const first = completed && !introRewarded();
+    state.settings.introDone = true;
+    delete state.settings.intro;
+    ui.intro = null;
+    if (first) {
+      state.stars += 1;
+      state.log.push({ at: new Date().toISOString(), kind: 'win', title: INTRO_WIN, stars: 1 });
+    }
+    save();
+    setTab('hoy');
+    if (completed) celebrate(null, first ? 'Tu primer pasito ya está dado. Lo demás, de uno en uno.' : 'Listo. De uno en uno, como siempre.', first ? 1 : 0);
+    else toast('Cuando quieras verla otra vez: Ajustes → «Volver a ver la bienvenida».', { hand: true });
+  }
 
   function viewHoy() {
     const n = Date.now();
@@ -804,6 +1010,7 @@
         <label class="switch"><input type="checkbox" id="setCalm" ${s.calm ? 'checked' : ''}><span>Menos animaciones y confeti</span></label>
         <label class="field"><span class="field-label">Meta suave de logros al día</span>
           <select class="input" id="setGoal">${[1, 2, 3, 4, 5].map(g => `<option value="${g}" ${g === s.goal ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+        <div class="row"><button class="btn sm" data-action="intro-again">Volver a ver la bienvenida</button></div>
       </div>
       <fieldset class="set-group"><legend>Tema</legend>
         <div class="seg">${[['system', 'Sistema'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([v, l]) => `<label class="seg-btn"><input type="radio" name="theme" id="theme-${v}" value="${v}" ${s.theme === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>
@@ -915,7 +1122,7 @@
         <label class="field"><span class="field-label">Nombre</span><input class="input" id="pnName" maxlength="24" placeholder="Ej.: Trabajo, Casa, Ana"></label>
         ${photoField('pn', { name: '', color: nextColor, photo: ui.photoDraft })}
         ${colorPicker('pn', nextColor)}
-        <label class="switch"><input type="checkbox" id="pnExamples"><span>Empezar con tareas de ejemplo</span></label>
+        <label class="switch"><input type="checkbox" id="pnIntro" checked><span>Empezar con la bienvenida guiada</span></label>
         <div class="row"><button class="btn primary" type="submit">Crear y usar este perfil</button></div>
       </form>
       <p class="hint">Los perfiles no tienen contraseña: cualquiera que use este dispositivo puede abrirlos.</p>`;
@@ -1283,6 +1490,8 @@
     }
     withUndo('Copia restaurada en este perfil.', () => {
       state = normalize(data);
+      state.settings.introDone = true; // una copia restaurada nunca es un primer uso
+      delete state.settings.intro;
       resetUi();
     });
     renderSheet();
@@ -1341,9 +1550,9 @@
     toast(`Hola, ${p.name}.${paused ? ' Dejé en pausa la sesión de enfoque del otro perfil.' : ''}`, { hand: true });
   }
 
-  function createProfile(name, color, withExamples, photo) {
+  function createProfile(name, color, withIntro, photo) {
     const p = { id: uid(), name, color: safeColor(color) };
-    const fresh = freshState(withExamples);
+    const fresh = freshState(withIntro);
     Object.assign(fresh.settings, { sound: state.settings.sound, calm: state.settings.calm, theme: state.settings.theme });
     // Primero lo esencial (tareas y ajustes); la foto, si no cabe, se descarta y se avisa.
     store.set(stateKey(p.id), JSON.stringify(fresh));
@@ -1852,7 +2061,7 @@
       ${next ? `<p class="s-step">${ICON.steps}Empieza por: <strong>${esc(next.text)}</strong></p>` : ''}
       <p class="margin-note">${esc(ui.remNote)}</p>
       <div class="row">
-        <button class="btn primary" data-action="rem-start">Empezar ahora</button>
+        ${introActive() ? '' : '<button class="btn primary" data-action="rem-start">Empezar ahora</button>'}
         <button class="btn" data-action="rem-done">Ya está hecha</button>
         <button class="btn ghost" data-action="rem-snooze" data-min="10">En 10 min</button>
         <button class="btn ghost" data-action="rem-snooze" data-min="60">En 1 hora</button>
@@ -2677,6 +2886,26 @@
         state.tasks = state.tasks.filter(x => !x.done || x.repeat !== 'none');
       });
     },
+    'intro-next'() { introGo(intro().step + 1); },
+    'intro-back'() { introGo(intro().step - 1); },
+    'intro-skip'() { finishIntro(false); },
+    'intro-pick'(t) {
+      const it = intro();
+      if (!t) return;
+      it.smallId = it.smallId === t.id ? null : t.id;
+      it.draft.introSmall = '';
+      render();
+    },
+    'intro-again'() {
+      const paused = pauseFocusQuietly(); // un temporizador en marcha quedaría escondido tras la bienvenida
+      state.settings.introDone = false;
+      delete state.settings.intro;
+      ui.intro = null;
+      save();
+      closeSheet();
+      introGo(0);
+      if (paused) toast('Enfoque en pausa mientras tanto.', { hand: true });
+    },
     'reset-ask'() {
       ui.confirm = 'reset';
       renderSheet();
@@ -2731,6 +2960,16 @@
       else if (parsed.today) msg += ' Está en tu foco de hoy.';
       toast(msg, { hand: true, action: { label: 'Detalles', run: () => openTask(t.id) } });
     },
+    introForm() {
+      const it = intro();
+      if (it.step > INTRO_STEPS) {
+        finishIntro(true);
+        return;
+      }
+      introCollect();
+      introApply();
+      introGo(it.step + 1);
+    },
     dumpForm() {
       const lines = $('dumpText').value.split(/\r?\n/).map(l => l.replace(/^\s*(?:[-*•·]|\d+[.)])\s+/, '').trim()).filter(Boolean).slice(0, 100);
       if (!lines.length) {
@@ -2783,13 +3022,13 @@
         return;
       }
       const color = (document.querySelector('input[name="pnColor"]:checked') || {}).value;
-      const examples = $('pnExamples').checked;
+      const withIntro = $('pnIntro').checked;
       ui.creatingProfile = true;
       try {
         if (ui.photoPending) await ui.photoPending; // la foto elegida aún se está preparando
         ui.photoPending = null;
         if (ui.sheet !== 'profiles') return; // cerraron la hoja mientras tanto
-        createProfile(name, color, examples, ui.photoDraft);
+        createProfile(name, color, withIntro, ui.photoDraft);
       } finally {
         ui.creatingProfile = false;
       }
@@ -2832,6 +3071,14 @@
 
   document.addEventListener('input', e => {
     const el = e.target;
+    if (ui.intro && /^intro[A-Z]/.test(el.id)) {
+      intro().draft[el.id] = el.value;
+      if (el.id === 'introSmall') { // lo escrito sustituye al chip, y se nota (la elección guardada se deshace al confirmar)
+        const typed = !!el.value.trim();
+        document.querySelectorAll('.intro-chips .chip-btn').forEach(b => b.setAttribute('aria-pressed', String(!typed && b.dataset.id === intro().smallId)));
+      }
+      return;
+    }
     if (el.id === 'pnName' || el.id === 'peName') {
       refreshPhotoPreview(el.id.slice(0, 2));
       return;
@@ -2859,6 +3106,10 @@
 
   document.addEventListener('change', e => {
     const el = e.target;
+    if (ui.intro && /^intro[A-Z]/.test(el.id)) {
+      intro().draft[el.id] = el.value; // iOS avisa del selector de hora solo con `change`
+      return;
+    }
     if (el.dataset.photo) {
       const file = el.files && el.files[0];
       el.value = '';

@@ -76,10 +76,114 @@ function serve() {
   await page.reload();
   await page.waitForTimeout(300);
 
-  await step('primer uso con tareas de ejemplo', async () => {
-    const { state } = await data();
-    assert.equal(state.tasks.length, 5);
-    assert.ok(await page.isVisible('text=Borrar ejemplos'));
+  await step('bienvenida guiada: sin ejemplos, tres preguntas que crean tus primeras tareas', async () => {
+    assert.equal((await data()).state.tasks.length, 0, 'nada viene hecho');
+    assert.ok(await page.isVisible('#introForm'));
+    assert.ok(await page.isHidden('#captureInput'), 'la captura se esconde durante la bienvenida');
+    assert.ok(await page.isHidden('.tabs'), 'las pestañas también');
+    await shot('00-bienvenida');
+    await page.fill('#introName', 'Ana');
+    await page.click('#introNext');
+    assert.equal((await data()).meta.list[0].name, 'Ana');
+    assert.ok(await page.isVisible('text=Paso 1 de 3'));
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.id), 'introDump', 'en el ordenador el cursor va al campo');
+    // Volver atrás no pierde nada; el borrador se conserva al rehacer la vista.
+    await page.fill('#introDump', 'Ordenar el escritorio\n- Pedir cita con el médico a las 17');
+    await page.click('[data-action="intro-back"]');
+    await page.click('#introNext');
+    assert.equal(await page.inputValue('#introDump'), 'Ordenar el escritorio\n- Pedir cita con el médico a las 17');
+    await page.fill('#introDump', 'Ordenar el escritorio\n- Pedir cita con el médico a las 17\n\nPreparar la presentación\nResponder un correo pendiente');
+    await page.click('#introNext');
+    await page.waitForSelector('.toast:has-text("4 ideas fuera de tu cabeza (1 con aviso)")');
+    let { state } = await data();
+    assert.deepEqual(state.tasks.map(t => t.title), ['Ordenar el escritorio', 'Pedir cita con el médico', 'Preparar la presentación', 'Responder un correo pendiente']);
+    assert.ok(state.tasks.every(t => t.list === 'Bandeja'), 'todo a la Bandeja, sin ordenar');
+    assert.equal(new Date(state.tasks[1].remindAt).getHours(), 17, 'la hora escrita se entiende');
+    // Recargar a medias: sigue en el mismo paso, con lo ya guardado.
+    await page.reload();
+    await page.waitForSelector('#introForm');
+    assert.ok(await page.isVisible('text=Paso 2 de 3'), 'retoma donde se quedó');
+    assert.equal(await page.$$eval('.intro-chips .chip-btn', els => els.length), 4);
+    // Paso 2: lo más pequeño. Elegir un chip, cambiar de idea al volver y escribir otra cosa.
+    await page.click('.intro-chips .chip-btn:has-text("Ordenar el escritorio")');
+    assert.equal(await page.getAttribute('.intro-chips .chip-btn:has-text("Ordenar el escritorio")', 'aria-pressed'), 'true');
+    await page.click('#introNext');
+    state = (await data()).state;
+    assert.ok(state.tasks.find(t => t.title === 'Ordenar el escritorio').today, 'el chip elegido va al foco');
+    assert.equal(state.tasks.find(t => t.title === 'Ordenar el escritorio').list, 'Personal', 'y sale de la Bandeja');
+    await page.click('[data-action="intro-back"]');
+    assert.equal(await page.getAttribute('.intro-chips .chip-btn:has-text("Ordenar el escritorio")', 'aria-pressed'), 'true');
+    await page.fill('#introSmall', 'Beber un vaso de agua');
+    assert.equal(await page.getAttribute('.intro-chips .chip-btn:has-text("Ordenar el escritorio")', 'aria-pressed'), 'false', 'escribir sustituye al chip');
+    await page.click('#introNext');
+    state = (await data()).state;
+    const water = state.tasks.find(t => t.title === 'Beber un vaso de agua');
+    assert.ok(water && water.today && water.energy === 'low' && water.minutes === 5, 'lo escrito va al foco de hoy');
+    const desk0 = state.tasks.find(t => t.title === 'Ordenar el escritorio');
+    assert.equal(desk0.today, false, 'la elección anterior deja el foco');
+    assert.equal(desk0.list, 'Bandeja', 'y vuelve a su lista');
+    // Atrás hasta el paso 1: recuerda lo guardado en vez de mostrar el cuadro vacío.
+    await page.click('[data-action="intro-back"]');
+    await page.click('[data-action="intro-back"]');
+    assert.ok(await page.isVisible('text=Ya guardé en la Bandeja: «Ordenar el escritorio»'));
+    assert.equal((await page.textContent('#introNext')).trim(), 'Añadir y seguir');
+    await page.click('#introNext');
+    await page.click('#introNext');
+    assert.equal((await data()).state.tasks.length, 5, 'pasar de largo no duplica nada');
+    // Paso 3: una rutina diaria con su hora (el selector de iOS solo avisa con `change`).
+    assert.ok(await page.isVisible('text=Paso 3 de 3'));
+    await page.fill('#introRoutine', 'Tomar la medicación');
+    await page.evaluate(() => {
+      const el = document.getElementById('introTime');
+      el.value = '08:30';
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.click('#introNext');
+    state = (await data()).state;
+    const meds = state.tasks.find(t => t.title === 'Tomar la medicación');
+    assert.equal(meds.repeat, 'daily');
+    assert.equal(new Date(meds.remindAt).getHours(), 8);
+    assert.equal(new Date(meds.remindAt).getMinutes(), 30);
+    assert.ok(Date.parse(meds.remindAt) > Date.now());
+    // Resumen final con lo creado y cómo se usa; terminar da la primera estrella.
+    assert.ok(await page.isVisible('text=4 ideas en la'));
+    assert.ok(await page.isVisible('text=1 aviso programado: «Pedir cita con el médico»'));
+    assert.ok(await page.isVisible('text=«Beber un vaso de agua» en tu'));
+    assert.ok(await page.isVisible('text=cada día a las 08:30'));
+    await shot('00-bienvenida-final');
+    await page.click('#introNext');
+    state = (await data()).state;
+    assert.equal(state.settings.introDone, true);
+    assert.equal(state.settings.intro, undefined);
+    assert.equal(state.stars, 1);
+    assert.equal(state.log.filter(e => e.kind === 'win').length, 1);
+    assert.ok(await page.isVisible('#captureInput'));
+    assert.ok(await page.isVisible('#hello-h'));
+    assert.match(await page.textContent('#hello-date'), /· Ana$/);
+    await page.reload();
+    await page.waitForTimeout(300);
+    assert.ok(await page.isHidden('#introForm'), 'no vuelve a salir');
+    // Repetirla desde Ajustes no regala otra estrella ni miente sobre la lista.
+    await page.click('#settingsBtn');
+    await page.click('[data-action="intro-again"]');
+    await page.waitForSelector('#introForm');
+    assert.ok(await page.isHidden('#introName'), 'ya tiene nombre: no lo vuelve a pedir');
+    for (let i = 0; i < 4; i++) await page.click('#introNext');
+    assert.ok(await page.isVisible('text=No añadí nada nuevo'));
+    assert.ok(await page.isVisible('text=Un repaso nunca sobra'));
+    await page.click('#introNext');
+    state = (await data()).state;
+    assert.equal(state.stars, 1, 'la estrella de empezar es una sola');
+    assert.equal(state.log.filter(e => e.kind === 'win').length, 1);
+    // «Saltar» la cierra sin tocar nada.
+    await page.click('#settingsBtn');
+    await page.click('[data-action="intro-again"]');
+    await page.waitForSelector('#introForm');
+    await page.click('[data-action="intro-skip"]');
+    state = (await data()).state;
+    assert.equal(state.settings.introDone, true);
+    assert.equal(state.tasks.length, 6);
+    assert.equal(state.stars, 1, 'saltar no regala estrellas');
   });
 
   await step('batería baja sugiere una tarea fácil con su motivo', async () => {
@@ -103,15 +207,17 @@ function serve() {
     await page.click('[data-tab="tareas"]');
     const desk = (await data()).state.tasks.find(t => t.title === 'Ordenar el escritorio');
     await page.click(`#t-exp-${desk.id}`);
+    await page.fill(`#step-in-${desk.id}`, 'Tirar lo que sea basura');
+    await page.press(`#step-in-${desk.id}`, 'Enter');
     await page.click(`[data-id="${desk.id}"] [data-action="step-toggle"]`);
     const water = (await data()).state.tasks.find(t => t.title === 'Beber un vaso de agua');
     await page.click(`#t-chk-${water.id}`);
-    assert.equal((await data()).state.stars, 3);
+    assert.equal((await data()).state.stars, 1 + 1 + 2, 'bienvenida + paso + tarea fácil');
     await shot('02-tareas');
     await page.click(`[data-id="${desk.id}"] [data-action="delete"]`);
-    assert.equal((await data()).state.tasks.length, 5);
-    await page.click('.toast-btn:text("Deshacer")');
     assert.equal((await data()).state.tasks.length, 6);
+    await page.click('.toast-btn:text("Deshacer")');
+    assert.equal((await data()).state.tasks.length, 7);
   });
 
   await step('vaciar la cabeza crea varias tareas en la Bandeja', async () => {
@@ -192,6 +298,7 @@ function serve() {
     await page.click('#profileBtn');
     await page.fill('#pnName', 'Trabajo');
     await page.click('#pn-c1');
+    await page.uncheck('#pnIntro');
     await page.click('#profileNewForm button[type="submit"]');
     let { meta, state } = await data();
     assert.equal(meta.list.length, 2);
@@ -216,22 +323,22 @@ function serve() {
     const wake = () => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     const taskIn = async (pid, title) => JSON.parse(await page.evaluate(id => localStorage.getItem(`pasito-v1:${id}`), pid)).tasks.find(x => x.title === title);
 
-    // Por defecto solo avisa el perfil abierto: un aviso vencido de «Yo» no suena estando en «Trabajo».
+    // Por defecto solo avisa el perfil abierto: un aviso vencido de «Ana» (el primer perfil) no suena estando en «Trabajo».
     assert.equal((await data()).meta.notify, 'active');
     await overdue(firstId, 'Pedir cita con el médico');
     await wake();
     await page.waitForTimeout(200);
-    assert.ok(await page.isHidden('#reminder'), '«Yo» está en silencio');
+    assert.ok(await page.isHidden('#reminder'), '«Ana» está en silencio');
     assert.equal((await taskIn(firstId, 'Pedir cita con el médico')).notified, false, 'queda pendiente para cuando se abra');
     assert.ok(await page.isHidden('#profileMute'));
 
-    // Elegimos que avise siempre «Yo»: su aviso llega aunque esté abierto «Trabajo», y «Trabajo» queda en silencio.
+    // Elegimos que avise siempre «Ana»: su aviso llega aunque esté abierto «Trabajo», y «Trabajo» queda en silencio.
     await page.click('#profileBtn');
     await page.check(`#nt-${firstId}`);
     await page.keyboard.press('Escape');
     await page.waitForSelector('#reminder:has-text("Aviso para")');
     assert.equal((await page.textContent('#remTitle')).trim(), 'Pedir cita con el médico');
-    assert.match(await page.textContent('#reminder .eyebrow'), /Yo/);
+    assert.match(await page.textContent('#reminder .eyebrow'), /Ana/);
     assert.ok(await page.isVisible('#profileMute'), 'la cabecera muestra que «Trabajo» está en silencio');
     assert.ok(await page.isVisible('#notifyHere'));
     await shot('06-perfil-trabajo');
@@ -388,6 +495,9 @@ function serve() {
     await page.setInputFiles('#pn-photo', path.join(ROOT, 'icon-512.png'));
     await page.click('#profileNewForm button[type="submit"]');
     await page.waitForSelector('#profileAvatar img');
+    assert.ok(await page.isVisible('#introForm'), 'el perfil nuevo empieza con la bienvenida');
+    assert.ok(await page.isHidden('#introName'), 'sin pedir el nombre otra vez');
+    await page.click('[data-action="intro-skip"]');
     const after = await data();
     assert.equal(after.meta.list.find(p => p.id === after.meta.active).name, 'Ana');
     assert.match(await photoOf(after.meta.active), /^data:image\/jpeg/);
@@ -591,6 +701,22 @@ function serve() {
     await shot('08-hoy-oscuro');
     await page.click('#settingsBtn');
     await shot('09-ajustes-oscuro');
+    // La bienvenida, en estrecho y oscuro: chips largos y la fila «Qué / A qué hora» sin desbordes.
+    await page.click('[data-action="intro-again"]');
+    await page.waitForSelector('#introForm');
+    await page.click('#introNext');
+    await page.fill('#introDump', 'Revisar https://ejemplo.invalid/una-direccion-larguisima-sin-espacios-que-no-cabe-en-una-linea');
+    await page.click('#introNext');
+    for (const n of [2, 3]) {
+      assert.ok(await page.isVisible(`text=Paso ${n} de 3`));
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.equal(overflow, 0, `desborde horizontal en la bienvenida, paso ${n}`);
+      if (n === 2) {
+        await shot('10-bienvenida-oscuro');
+        await page.click('#introNext');
+      }
+    }
+    await page.click('[data-action="intro-skip"]');
   });
 
   await step('sin errores de JavaScript', async () => {

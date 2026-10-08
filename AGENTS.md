@@ -68,6 +68,20 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
   se repite); 404/410 → olvida el dispositivo; 429/5xx/red → los vuelve a poner si nadie cambió el dispositivo; >6 h tarde →
   descarta. Cada dispositivo va en su `try/catch`. `ALLOWED_ORIGIN` se normaliza con `new URL().origin` y un origen distinto
   recibe un 403 legible. Claves VAPID opcionales por variables (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_JWK`). Solo `export default`.
+- **Bienvenida guiada** (primer uso, sustituye a las tareas de ejemplo): `settings.introDone`; `freshState(withIntro)` la deja
+  pendiente en el primer perfil del dispositivo y en perfiles nuevos con `#pnIntro`; `normalize()` la da por hecha si falta
+  (perfiles anteriores) e `importData()` siempre. Mientras `introActive()`, `render()` pinta `viewIntro()` y `body.is-intro`
+  oculta captura y pestañas (la tarjeta de aviso sigue, sin «Empezar ahora»: el enfoque quedaría escondido).
+  El progreso se guarda en `settings.intro = { step, ids, smallId, newSmall, movedSmall }` (`introPersist`) para retomar tras
+  recargar, cambiar de perfil o restaurar; `ui.intro` lo carga y añade `draft` (borradores de texto, desde el `input`/`change`
+  delegado, porque el render rehace el HTML; `introCollect` los relee al enviar por si solo hubo `change`, como la hora en iOS).
+  Cada paso crea sus tareas al confirmar (`introApply`: 0 nombre del perfil, 1 volcado a la Bandeja con `L.parseQuickInput`,
+  2 lo más pequeño → `today`/`low`/5 min y sale de la Bandeja (al cambiar de idea, la anterior vuelve: `newSmall` se borra,
+  `movedSmall` vuelve a la Bandeja), 3 rutina diaria con `L.nextAt`, hora validada). Los pasos avisan de lo ya guardado al
+  volver atrás, y los textos son honestos si el perfil está en silencio (`activeMuted()`). `finishIntro(true)` da 1 ★ y un
+  `win` «Empezar con Pasito» solo la primera vez (`introRewarded`); «Saltar» (`intro-skip`) no. `introGo` enfoca el `h1`
+  (`tabindex=-1`) y, con `hover: hover`, el campo. «Volver a ver la bienvenida» (`intro-again`, pausa el enfoque) en Ajustes.
+  `example` sigue soportado solo para datos antiguos.
 - **Avisos cortos (toasts)**: abajo, encima de las pestañas; no capturan toques salvo su botón, y suben por encima de la
   tarjeta de recordatorio (`liftToasts`, variable CSS `--toast-lift`). Antes, arriba, tapaban perfil y ajustes.
   Los colores se validan contra `PROFILE_COLORS` (`safeColor`) porque van a un `style`.
@@ -115,7 +129,8 @@ En el entorno de Claude Code en la nube Playwright ya está instalado de forma g
 PLAYWRIGHT_MODULE=/opt/node22/lib/node_modules/playwright SHOTS_DIR=/tmp/capturas npm run test:e2e
 ```
 
-`tests/e2e.js` cubre: migración v1→perfiles, ejemplos, sugerencia por batería, captura relativa, pasos/estrellas/deshacer,
+`tests/e2e.js` cubre: migración v1→perfiles, bienvenida guiada (nombre, volcado, lo más pequeño, rutina, resumen, estrella,
+repetir y saltar), sugerencia por batería, captura relativa, pasos/estrellas/deshacer,
 vaciar la cabeza, rutinas, búsqueda sin tildes, enfoque + ruido marrón, logro manual, aviso vencido + posponer + insistencia,
 perfiles (crear, aislar datos, volver, borrar y deshacer), un solo perfil avisa (por defecto el abierto; «Siempre X» con tarjeta
 externa, posponer, «Ir a X», rutina diaria del elegido, tarjeta obsoleta entre pestañas, texto honesto en silencio, salir del
@@ -134,6 +149,7 @@ La guía para publicar en GitHub Pages está en el README.
 - Sin sincronización entre dispositivos (solo copia/restauración manual por perfil). Perfiles sin contraseña.
 - El parser de captura es heurístico: «a las 1–6» sin «de la mañana» se entiende como tarde (13–18 h). No entiende fechas como «el 15».
 - `.ics` no pliega líneas de más de 75 octetos (los calendarios principales lo toleran).
+- Hecho en v1.5: bienvenida guiada (revisada con 3 revisores + verificación adversarial; 19 hallazgos confirmados y corregidos).
 - Hecho en v1.4: notificaciones con la app cerrada (servidor propio en Cloudflare Workers).
 - Hecho en v1.3: un solo perfil recibe los avisos (revisado con 3 revisores + verificación adversarial; 8 problemas confirmados
   y corregidos, más los avisos cortos que tapaban la cabecera).

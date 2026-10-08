@@ -354,8 +354,26 @@ kbd { padding: 0 .35rem; border: 1px solid var(--rule); border-radius: 4px; back
   .stars-card { grid-template-columns: minmax(0, 1fr); }
   .profile-name { max-width: 5.5rem; }
   .upcoming li { grid-template-columns: minmax(0, 1fr); gap: .1rem; }
+  .intro-row { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 .calm *, .calm *::before, .calm *::after { animation: none !important; transition: none !important; }
+
+/* ---------- Bienvenida guiada (primer uso) ---------- */
+body.is-intro .capture, body.is-intro .tabs { display: none; }
+body.is-intro .app { padding-block-end: calc(1.5rem + env(safe-area-inset-bottom, 0px)); }
+body.is-intro .toasts { bottom: calc(1rem + var(--toast-lift, 0px) + env(safe-area-inset-bottom, 0px)); }
+#intro-h:focus { outline: none; }
+.intro { display: flex; flex-direction: column; gap: .9rem; padding: 1.3rem 1.2rem 1rem; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r); box-shadow: var(--shadow); }
+.intro form { display: flex; flex-direction: column; gap: .9rem; }
+.intro p, .intro h1 { max-width: 36rem; }
+.intro-nav { margin-top: .2rem; }
+.intro-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.intro-chips .chip-btn { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.chip-btn[aria-pressed="true"] { background: var(--pen-soft); border-style: solid; border-color: var(--pen); }
+.intro-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: end; }
+.intro-guide { display: flex; flex-direction: column; gap: .5rem; padding-left: 1.1rem; list-style: disc; }
+.intro-guide li::marker { color: var(--pen); }
+.intro-skip { margin-bottom: 1.5rem; text-align: center; }

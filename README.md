@@ -16,6 +16,13 @@ Funciona en el navegador, se instala en el móvil como una app y **no necesita c
 
 Arriba a la derecha están tu **perfil** (círculo con inicial) y los **Ajustes**.
 
+### La primera vez
+
+Pasito no viene con tareas de ejemplo: la primera vez te hace **tres preguntas** y con tus respuestas monta tu lista.
+Qué te da vueltas en la cabeza (una cosa por línea, va a la Bandeja), qué es lo más pequeño que podrías hacer hoy
+(va a tu foco) y si hay algo que necesites hacer cada día (una rutina con su hora). Todo se puede saltar y, al terminar,
+te explica en cinco líneas cómo se usa cada pestaña. Para verla otra vez: *Ajustes → Volver a ver la bienvenida*.
+
 ### Pensado para TDAH
 
 - **Captura en un segundo.** Escribe y pulsa Enter. Entiende `llamar a mamá mañana a las 5`, `sacar la ropa en 45 min`,
