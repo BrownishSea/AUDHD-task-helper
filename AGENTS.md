@@ -24,6 +24,9 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
 | `sw.js` | Service worker: caché red-primero para uso sin conexión y `notificationclick`. Sube `CACHE` si cambias la lista de assets. |
 | `manifest.webmanifest`, `icon.svg`, `icon-192.png`, `icon-512.png` | PWA instalable. Los PNG se generaron desde `icon.svg` con Playwright. |
 | `tests/logic.test.js` | Pruebas `node:test` de `logic.js`. `npm test`. |
+| `config.js` | `window.PASITO_CONFIG = { pushApi }`: dirección del servidor de avisos para no pedirla en cada teléfono. |
+| `server/worker.js` | Servidor de avisos (Cloudflare Worker, un solo archivo, sin dependencias): API + cron cada minuto + Web Push (VAPID RFC 8292, aes128gcm RFC 8291 con WebCrypto). Guía en `server/README.md`. |
+| `tests/push-server.test.js`, `tests/push-helpers.js` | Pruebas del Worker con KV en memoria y push simulado; descifran cada envío y verifican la firma. `HTTP_ECE_MODULE` añade un descifrado con la librería de referencia `http_ece`. |
 | `tests/e2e.js` | Recorrido completo en Chromium con Playwright (servidor estático propio). `npm run test:e2e`; `PLAYWRIGHT_MODULE` apunta a un Playwright global, `SHOTS_DIR` guarda capturas. |
 
 ## Arquitectura de `app.js`
@@ -42,6 +45,29 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
   convierte su cola en avisos externos. El selector (`notifyTarget`) aplica la elección con retardo (`chooseNotifyTarget`,
   600 ms, o al cerrar la hoja / pulsar otra cosa) porque las flechas del teclado marcan cada opción al pasar.
   Al poner una hora en un perfil en silencio, `remindPromise()` no promete «Te aviso».
+- **Avisos con la app cerrada (Web Push)**. Configuración del dispositivo en `localStorage['pasito-push']`
+  (`{ api, deviceId, lastSyncAt, lastHash, scheduled, lastError }`, no es del perfil; otra pestaña la fusiona pero conserva su
+  `lastHash`). «Conectar este teléfono» (`connectPush`) pide permiso (`permissionHelp()` si está bloqueado), suscribe
+  `pushManager` con la clave VAPID de `GET /api/key` y `pushSync()` hace `POST /api/devices/:id` (`text/plain`, sin preflight)
+  con `L.pushSchedule()` del perfil que avisa: 14 días, repeticiones, insistencias (+10/+20 min; si el aviso actual ya sonó,
+  las que quedan desde `nagAt`) y una entrada `pasito-refresh` medio día antes de la última rutina para pedir que se abra la app.
+  `schedulePushSync()` (1,5 s) se llama desde `save()`, `saveProfiles()` y cada `tick()`; solo envía si cambia el hash o cada
+  6 h, y no desde pestañas ocultas (salvo `flushPushNow()`, con `keepalive`, al ocultar la app o en `pagehide`).
+  La app siempre muestra su notificación local si la ventana no tiene foco; usa la misma etiqueta `pasito-<id>` que el push,
+  así el sistema no la duplica. El service worker muestra el push (o, si Pasito está delante y no es Safari, le pasa el aviso
+  con `postMessage` `pasito-push`); solo cuenta ventanas dentro de su `scope`. «Hecha», «En 10 min», tocar y descartar se
+  guardan en IndexedDB `pasito-sw/actions` (`queueAction`: `done|snooze|open|dismiss`, con `at`). La app los aplica con
+  `drainActions()` antes del primer `tick()` al arrancar, al volver a la pestaña o al recibir `pasito-actions`; antes de aplicar
+  pone la tarea al día (`resetIfDue` + `catchUp` en `a.at`), «Hecha» usa `completeTask(t, null, a.at)` o `completeRaw` en
+  perfiles no abiertos, y `open/dismiss` la dan por atendida (sin insistir; `open` además enseña la tarjeta).
+  `catchUp()` (`L.catchUpRepeat`): una rutina sin responder salta a su última repetición en vez de quedarse en la vieja.
+  Tocar o descartar → `POST /ack` (borra las insistencias de esa etiqueta); «En 10 min» → `POST /snooze`.
+- **Servidor (`server/worker.js`)**. KV: `vapid`, `dev:<id>` (máx. 10 dispositivos, si no 429) e `index` (`{id: próximo|null}`;
+  `null` = sin avisos, el cron lo salta; una lectura por minuto). Solo acepta endpoints de servicios de push conocidos y claves
+  P-256 válidas. El cron guarda primero el dispositivo sin los avisos que toca y luego envía (si guardar falla, no envía: nada
+  se repite); 404/410 → olvida el dispositivo; 429/5xx/red → los vuelve a poner si nadie cambió el dispositivo; >6 h tarde →
+  descarta. Cada dispositivo va en su `try/catch`. `ALLOWED_ORIGIN` se normaliza con `new URL().origin` y un origen distinto
+  recibe un 403 legible. Claves VAPID opcionales por variables (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_JWK`). Solo `export default`.
 - **Avisos cortos (toasts)**: abajo, encima de las pestañas; no capturan toques salvo su botón, y suben por encima de la
   tarjeta de recordatorio (`liftToasts`, variable CSS `--toast-lift`). Antes, arriba, tapaban perfil y ajustes.
   Los colores se validan contra `PROFILE_COLORS` (`safeColor`) porque van a un `style`.
@@ -95,16 +121,20 @@ perfiles (crear, aislar datos, volver, borrar y deshacer), un solo perfil avisa 
 externa, posponer, «Ir a X», rutina diaria del elegido, tarjeta obsoleta entre pestañas, texto honesto en silencio, salir del
 perfil que avisa con su aviso en pantalla, flechas por el selector sin gastar avisos, borrar el elegido), foto de perfil (recorte a 192 px, deshacer, cancelar,
 archivos no válidos, foco tras «Quitar foto», crear antes de que termine la decodificación, foto manipulada en el almacenamiento,
-almacenamiento lleno y bloqueado), modo oscuro sin desbordes a 360 px y cero errores JS.
+almacenamiento lleno y bloqueado), avisos con la app cerrada (conectar contra el Worker real con suscripción simulada,
+programación en el servidor, envío cifrado del cron y descifrado, notificación del service worker con sus botones vía CDP
+`ServiceWorker.deliverPushMessage`, «Hecha» y descartar aplicados desde la cola, desconectar), modo oscuro sin desbordes a 360 px y cero errores JS.
+Usa el Chromium completo (`channel: 'chromium'`): el «headless shell» deniega siempre las notificaciones.
 La guía para publicar en GitHub Pages está en el README.
 
 ## Limitaciones conocidas e ideas siguientes
 
-- Sin servidor no hay notificaciones con la app cerrada (no hay Push). El `.ics` es la alternativa.
-  Siguiente paso posible: Web Push con un backend mínimo, o Notification Triggers si algún navegador lo implementa.
+- Avisos con la app cerrada: requieren desplegar `server/` (Cloudflare, gratis). iOS no muestra botones en las notificaciones web.
+  KV es eventualmente consistente: un aviso puede salir hasta ~1 min tarde o, rara vez, repetirse (mismo `tag`, se sustituye).
 - Sin sincronización entre dispositivos (solo copia/restauración manual por perfil). Perfiles sin contraseña.
 - El parser de captura es heurístico: «a las 1–6» sin «de la mañana» se entiende como tarde (13–18 h). No entiende fechas como «el 15».
 - `.ics` no pliega líneas de más de 75 octetos (los calendarios principales lo toleran).
+- Hecho en v1.4: notificaciones con la app cerrada (servidor propio en Cloudflare Workers).
 - Hecho en v1.3: un solo perfil recibe los avisos (revisado con 3 revisores + verificación adversarial; 8 problemas confirmados
   y corregidos, más los avisos cortos que tapaban la cabecera).
 - En el modo «el perfil que esté abierto», dos ventanas abiertas en perfiles distintos suenan cada una el suyo (es lo que pide el modo).

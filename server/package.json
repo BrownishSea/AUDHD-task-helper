@@ -1,0 +1,12 @@
+{
+  "name": "pasito-avisos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Servidor de avisos de Pasito (Cloudflare Worker): envía notificaciones push con la app cerrada.",
+  "type": "module",
+  "scripts": {
+    "deploy": "npx --yes wrangler@4 deploy",
+    "dev": "npx --yes wrangler@4 dev"
+  },
+  "license": "Apache-2.0"
+}

@@ -92,6 +92,51 @@ test('solo avisa un perfil: el elegido o el que esté abierto', () => {
   assert.equal(L.notifyTarget(null), null);
 });
 
+test('avisos para el servidor: futuros, con insistencia, repeticiones y sin los ya hechos', () => {
+  const now = NOW.getTime();
+  const tasks = [
+    { id: 'a', title: 'Llamar', remindAt: at(8, 17), steps: [{ text: 'Buscar el número', done: false }] },
+    { id: 'b', title: 'Hecha', remindAt: at(8, 18), done: true },
+    { id: 'c', title: 'Pasada', remindAt: at(8, 9) },
+    { id: 'd', title: 'Pastilla', remindAt: at(9, 9), repeat: 'daily', done: true },
+    { id: 'e', title: 'Sonó', remindAt: at(8, 9, 50), notified: true, nagAt: at(8, 10, 5) },
+    { id: 'f', title: 'Sin hora' },
+  ];
+  const plan = L.pushSchedule(tasks, { now, pid: 'p1', days: 3 });
+  const a = plan.filter(x => x.taskId === 'a');
+  assert.deepEqual(a.map(x => [x.at, x.nag]), [[Date.parse(at(8, 17)), 0], [Date.parse(at(8, 17, 10)), 1], [Date.parse(at(8, 17, 20)), 2]]);
+  assert.equal(a[0].body, 'Empieza por: Buscar el número');
+  assert.equal(a[0].tag, 'pasito-a');
+  assert.equal(a[0].pid, 'p1');
+  assert.equal(plan.some(x => x.taskId === 'b' || x.taskId === 'c' || x.taskId === 'f'), false, 'ni hechas, ni pasadas, ni sin hora');
+  const d = plan.filter(x => x.taskId === 'd' && x.nag === 0).map(x => x.at);
+  assert.deepEqual(d, [at(9, 9), at(10, 9), at(11, 9)].map(Date.parse), 'la rutina diaria hasta el horizonte');
+  assert.deepEqual(plan.filter(x => x.taskId === 'e').map(x => [x.at, x.nag]), [[Date.parse(at(8, 10, 5)), 1], [Date.parse(at(8, 10, 15)), 2]], 'si ya sonó, sus insistencias pendientes');
+  assert.deepEqual(L.pushSchedule([{ id: 'g', title: 'G', remindAt: at(8, 9, 50), notified: true, nags: 1, nagAt: at(8, 10, 5) }], { now }).map(x => x.nag), [2], 'tras la primera insistencia queda la segunda');
+  const refresh = plan.filter(x => x.key === 'pasito-refresh');
+  assert.equal(refresh.length, 1, 'con rutinas, un aviso para renovar la lista');
+  assert.equal(refresh[0].at, Date.parse(at(11, 9)) - 43200000, 'medio día antes de la última rutina programada');
+  assert.equal(refresh[0].taskId, '');
+  assert.equal(plan.some(x => 'repeat' in x), false);
+  assert.ok(plan.every((x, i) => i === 0 || plan[i - 1].at <= x.at), 'ordenado por hora');
+  assert.equal(new Set(plan.map(x => x.key)).size, plan.length, 'claves únicas');
+
+  const quiet = L.pushSchedule(tasks, { now, nag: false, profileName: 'Casa', days: 1 });
+  assert.equal(quiet.some(x => x.nag), false);
+  assert.match(quiet[0].body, /^Casa · /);
+  assert.equal(L.pushSchedule(tasks.filter(t => !t.repeat), { now, max: 2 }).length, 2);
+  assert.equal(L.pushSchedule([tasks[0]], { now }).some(x => x.key === 'pasito-refresh'), false, 'sin rutinas no hace falta');
+});
+
+test('una rutina sin marcar pasa a la vez más reciente', () => {
+  const now = NOW.getTime();
+  assert.equal(L.catchUpRepeat({ repeat: 'daily', remindAt: at(5, 9) }, now), at(8, 9));
+  assert.equal(L.catchUpRepeat({ repeat: 'daily', remindAt: at(7, 11) }, now), null, 'aún no le tocó otra vez');
+  assert.equal(L.catchUpRepeat({ repeat: 'daily', remindAt: at(5, 9), done: true }, now), null, 'las hechas las reinicia shouldReset');
+  assert.equal(L.catchUpRepeat({ repeat: 'none', remindAt: at(5, 9) }, now), null);
+  assert.equal(L.catchUpRepeat({ repeat: 'weekdays', remindAt: at(2, 9) }, new Date(2026, 9, 11, 12).getTime()), at(9, 9), 'el domingo, la del viernes');
+});
+
 test('repetición diaria, laborables y semanal', () => {
   const now = NOW.getTime();
   assert.equal(L.nextOccurrence(at(8, 9), 'daily', now), at(9, 9));

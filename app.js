@@ -98,6 +98,14 @@
     },
     remove(k) { try { localStorage.removeItem(k); } catch (e) { /* nada que borrar */ } },
   };
+  // Avisos con la app cerrada: configuración del dispositivo (no del perfil). Ver server/README.md.
+  const CONFIG = window.PASITO_CONFIG || {};
+  const PUSH_KEY = 'pasito-push';
+  let push = (() => { try { return JSON.parse(store.get(PUSH_KEY)) || {}; } catch (e) { return {}; } })();
+  const savePush = () => store.set(PUSH_KEY, JSON.stringify(push));
+  let pushTimer = null;
+  let pushInFlight = false;
+
   // QuotaExceededError (Chrome, Safari) o NS_ERROR_DOM_QUOTA_REACHED (Firefox): el almacenamiento está lleno.
   // Cualquier otro error significa que el navegador no deja guardar nada (datos de sitio bloqueados).
   const storageFull = () => /quota/i.test(store.lastError);
@@ -148,7 +156,11 @@
     if (meta.notify !== 'active' && !meta.list.some(p => p.id === meta.notify)) meta.notify = 'active';
     return meta;
   }
-  const saveProfiles = () => store.set(PROFILES_KEY, JSON.stringify(profiles));
+  function saveProfiles() {
+    const ok = store.set(PROFILES_KEY, JSON.stringify(profiles));
+    schedulePushSync();
+    return ok;
+  }
   const currentProfile = () => profiles.list.find(p => p.id === profiles.active);
   const profileById = id => profiles.list.find(p => p.id === id);
   // Solo avisa un perfil (L.notifyTarget). Los demás quedan en silencio.
@@ -241,6 +253,7 @@
     clearTimeout(saveTimer);
     saveTimer = null;
     if (!store.set(stateKey(profiles.active), JSON.stringify(state))) warnStorage();
+    schedulePushSync();
   }
   function saveSoon() {
     clearTimeout(saveTimer);
@@ -784,8 +797,8 @@
         </div>
         ${profiles.list.length > 1 ? `<p class="hint">${ICON.bell} Avisa: <strong>${profiles.notify === 'active' ? 'el perfil que esté abierto' : `siempre ${esc((profileById(notifyTargetId()) || {}).name)}`}</strong>. <button class="btn sm ghost" data-action="go-profiles">Cambiar</button></p>` : ''}
         <label class="switch"><input type="checkbox" id="setNag" ${s.nag ? 'checked' : ''}><span>Insistir si no respondo (hasta 2 veces, cada 10 min)</span></label>
-        ${EMBEDDED ? '' : '<p class="hint">Con el navegador cerrado ninguna web puede avisarte. Para lo importante, abre la tarea y usa «Añadir a mi calendario».</p>'}
       </div>
+      <div class="set-group" id="pushBox">${(ui.pushHtml = pushSection())}</div>
       <div class="set-group"><h3>Comodidad</h3>
         <label class="switch"><input type="checkbox" id="setSound" ${s.sound ? 'checked' : ''}><span>Sonidos suaves</span></label>
         <label class="switch"><input type="checkbox" id="setCalm" ${s.calm ? 'checked' : ''}><span>Menos animaciones y confeti</span></label>
@@ -1106,8 +1119,8 @@
 
   const clearNag = t => { t.nagAt = null; t.nags = 0; };
 
-  function completeTask(t, rect) {
-    const at = new Date().toISOString();
+  function completeTask(t, rect, when = Date.now()) {
+    const at = new Date(when).toISOString();
     const stars = L.STARS[t.energy] || 3;
     t.done = true;
     t.doneAt = at;
@@ -1117,7 +1130,7 @@
     state.log.push({ at, kind: 'task', id: t.id, title: t.title, stars });
     if (t.repeat !== 'none' && t.remindAt) {
       t.prevRemindAt = t.remindAt;
-      t.remindAt = L.nextOccurrence(t.remindAt, t.repeat, Date.now());
+      t.remindAt = L.nextOccurrence(t.remindAt, t.repeat, Math.max(when, Date.now()));
       t.notified = false;
     }
     ui.reminderQueue = ui.reminderQueue.filter(x => x !== t.id);
@@ -1526,6 +1539,7 @@
     let fired = false;
     for (const t of data.tasks) {
       if (resetIfDue(t, now)) changed = true; // rutinas del perfil elegido, aunque no esté abierto
+      if (catchUp(t, now)) changed = true;
       if (!t || t.done || !t.remindAt) continue;
       let ring = false;
       if (!t.notified) {
@@ -1547,7 +1561,7 @@
       if (!ui.extQueue.some(x => x.pid === target && x.taskId === t.id)) ui.extQueue.push({ pid: target, taskId: t.id });
       fired = true;
       const next = (t.steps || []).find(st => st && !st.done);
-      if (!document.hasFocus()) systemNotify(`${p.name} · ${t.title}`, next ? `Empieza por: ${next.text}` : 'Abre Pasito para verlo.', t.id, true);
+      if (!document.hasFocus()) systemNotify(`${p.name} · ${t.title}`, next ? `Empieza por: ${next.text}` : 'Abre Pasito para verlo.', `pasito-${t.id}`, true, { taskId: t.id, pid: target, title: t.title });
     }
     if (changed) store.set(stateKey(target), JSON.stringify(data));
     if (fired) {
@@ -1774,11 +1788,11 @@
 
   /* ---------- Recordatorios ---------- */
 
-  async function systemNotify(title, body, tag, sticky) {
+  async function systemNotify(title, body, tag, sticky, data) {
     if (!('Notification' in window) || Notification.permission !== 'granted') return false;
     try {
       const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
-      const opts = { body, tag, icon: 'icon-192.png', badge: 'icon-192.png', renotify: true, requireInteraction: !!sticky };
+      const opts = { body, tag, icon: 'icon-192.png', badge: 'icon-192.png', renotify: true, requireInteraction: !!sticky, data: data || {} };
       if (reg) await reg.showNotification(title, opts);
       else new Notification(title, opts);
       return true;
@@ -1794,7 +1808,8 @@
     chime('reminder');
     vibrate([120, 80, 120]);
     const next = t.steps.find(s => !s.done);
-    if (!document.hasFocus()) systemNotify(t.title, next ? `Empieza por: ${next.text}` : 'Es el momento. Un pasito basta.', t.id, true);
+    // Misma etiqueta que el aviso del servidor: si llegan los dos, uno sustituye al otro.
+    if (!document.hasFocus()) systemNotify(t.title, next ? `Empieza por: ${next.text}` : 'Es el momento. Un pasito basta.', `pasito-${t.id}`, true, { taskId: t.id, pid: profiles.active, title: t.title });
   }
 
   function renderReminder() {
@@ -1865,12 +1880,22 @@
     return true;
   }
 
+  // Rutina sin marcar a la que ya le tocó otra vez: el aviso pasa a la vez más reciente y vuelve a sonar.
+  function catchUp(t, now) {
+    const next = L.catchUpRepeat(t, now);
+    if (!next) return false;
+    Object.assign(t, { remindAt: next, notified: false, nagAt: null, nags: 0, prevRemindAt: null });
+    (t.steps || []).forEach(st => { if (st) st.done = false; });
+    return true;
+  }
+
   function housekeeping() {
     const n = Date.now();
     const today = todayKey();
     let changed = false;
     for (const t of state.tasks) {
       if (resetIfDue(t, n)) changed = true;
+      if (catchUp(t, n)) changed = true;
       if (t.done && t.today && t.repeat === 'none' && t.doneAt && L.dayKey(t.doneAt) < today) {
         t.today = false;
         changed = true;
@@ -1913,6 +1938,7 @@
       }
     }
     const extChanged = checkOtherProfiles(n);
+    schedulePushSync();
     if (!changed) {
       if (extChanged) renderReminder();
       return;
@@ -1920,6 +1946,386 @@
     save();
     if (isTyping()) renderReminder();
     else render();
+  }
+
+  /* ---------- Avisos con la app cerrada (Web Push, server/worker.js) ---------- */
+
+  const NET_ERROR = 'No pude hablar con tu servidor de avisos. Revisa la dirección y la conexión.';
+  const pushConnected = () => !!(push.api && push.deviceId);
+  const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+  function pushSupport() {
+    if (EMBEDDED || !('serviceWorker' in navigator) || !location.protocol.startsWith('http')) return 'no';
+    if (isIOS() && !isStandalone()) return 'ios-install';
+    if (!('PushManager' in window) || !('Notification' in window)) return 'no';
+    return 'ok';
+  }
+
+  // Dónde se vuelve a dar el permiso depende de cómo esté abierta Pasito.
+  function permissionHelp() {
+    if (isIOS()) return 'Sin permiso para notificaciones. Actívalo en Ajustes del iPhone → Notificaciones → Pasito → «Permitir notificaciones» y vuelve a intentarlo.';
+    if (isStandalone() && /Android/i.test(navigator.userAgent)) return 'Sin permiso para notificaciones. Mantén pulsado el icono de Pasito → Información de la app → Notificaciones, actívalas y vuelve a intentarlo.';
+    return 'Sin permiso para notificaciones. Permítelas desde el candado junto a la dirección de la página y vuelve a intentarlo.';
+  }
+
+  function normalizeApi(value) {
+    let v = String(value || '').trim().replace(/\/+$/, '').replace(/\/api$/, '');
+    if (v && !/^[a-z]+:\/\//i.test(v)) v = `https://${v}`;
+    try {
+      const u = new URL(v);
+      const local = /^(localhost|127\.0\.0\.1)$/.test(u.hostname);
+      if (u.protocol !== 'https:' && !(local && u.protocol === 'http:')) return '';
+      return (u.origin + u.pathname).replace(/\/+$/, '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  const b64uToBytes = str => {
+    const s = String(str).replace(/-/g, '+').replace(/_/g, '/');
+    return Uint8Array.from(atob(s + '='.repeat((4 - (s.length % 4)) % 4)), c => c.charCodeAt(0));
+  };
+  const sameBytes = (a, b) => {
+    if (!a) return false;
+    const x = new Uint8Array(a);
+    return x.length === b.length && x.every((v, i) => v === b[i]);
+  };
+  const randomHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
+  function hashStr(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16);
+  }
+  const withTimeout = (promise, ms, message) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+
+  // Lo que el servidor debe enviar: los avisos del perfil que avisa (L.notifyTarget), con sus repeticiones e insistencia.
+  function pushPlan() {
+    const target = notifyTargetId();
+    const p = profileById(target);
+    const data = target === profiles.active ? state : readProfileState(target);
+    if (!p || !data) return [];
+    const nag = !data.settings || data.settings.nag !== false;
+    return L.pushSchedule(data.tasks, { pid: target, profileName: profiles.list.length > 1 ? p.name : '', nag });
+  }
+
+  function schedulePushSync(force) {
+    if (!pushConnected() || pushSupport() !== 'ok') return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => { pushSync(force); }, force ? 0 : 1500);
+  }
+
+  // Envía la lista solo si cambió (o cada 6 h). Nunca lanza: deja el error en push.lastError.
+  const syncRequest = (reminders, subscription, keepalive) => fetch(`${push.api}/api/devices/${push.deviceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ subscription, reminders, api: push.api }),
+    keepalive,
+  });
+  let lastSubscription = null;
+  const mainCount = reminders => reminders.filter(r => r.nag === 0 && r.taskId).length;
+
+  // Con varias pestañas, la que está a la vista es la que manda; una oculta solo envía al ocultarse (flushPushNow).
+  async function pushSync(force) {
+    if (!pushConnected() || (!force && document.hidden)) return;
+    if (pushInFlight) {
+      clearTimeout(pushTimer);
+      pushTimer = setTimeout(() => { pushSync(force); }, 1000);
+      return;
+    }
+    pushInFlight = true;
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+      if (!sub) throw new Error('Este dispositivo ya no está suscrito. Pulsa «Desconectar» y vuelve a conectarlo.');
+      const subscription = sub.toJSON();
+      lastSubscription = subscription;
+      const reminders = pushPlan();
+      const hash = hashStr(JSON.stringify([subscription.endpoint, reminders]));
+      if (!force && hash === push.lastHash && !push.lastError && Date.now() - (push.lastSyncAt || 0) < 6 * HOUR) return;
+      let res;
+      try {
+        res = await syncRequest(reminders, subscription, false);
+      } catch (e) {
+        throw new Error(NET_ERROR);
+      }
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error ? `El servidor de avisos dice: ${out.error}` : `El servidor de avisos respondió con un error (${res.status}).`);
+      Object.assign(push, { lastHash: hash, lastSyncAt: Date.now(), scheduled: mainCount(reminders), lastError: '' });
+    } catch (e) {
+      push.lastError = (e && e.message) || NET_ERROR;
+    } finally {
+      pushInFlight = false;
+      savePush();
+      refreshPushBox();
+    }
+  }
+
+  // Al ocultar o cerrar Pasito: envía ya lo pendiente (lo recién anotado) sin esperar al retardo de 1,5 s.
+  function flushPushNow() {
+    if (!pushConnected() || !lastSubscription || pushSupport() !== 'ok') return;
+    clearTimeout(pushTimer);
+    const reminders = pushPlan();
+    const hash = hashStr(JSON.stringify([lastSubscription.endpoint, reminders]));
+    if (hash === push.lastHash) return;
+    try {
+      syncRequest(reminders, lastSubscription, true).then(res => {
+        if (!res.ok) return;
+        Object.assign(push, { lastHash: hash, lastSyncAt: Date.now(), scheduled: mainCount(reminders), lastError: '' });
+        savePush();
+      }).catch(() => { /* se reintenta al volver */ });
+    } catch (e) { /* keepalive no disponible con cuerpos grandes: se reintenta al volver */ }
+  }
+
+  async function connectPush() {
+    if (ui.pushBusy) return;
+    const input = $('pushApi');
+    ui.pushDraft = input ? input.value : push.api || CONFIG.pushApi || '';
+    const api = normalizeApi(ui.pushDraft);
+    if (!api) {
+      ui.pushError = 'Escribe la dirección de tu servidor de avisos (empieza por https://).';
+      refreshPushBox();
+      if ($('pushApi')) $('pushApi').focus();
+      return;
+    }
+    ui.pushBusy = true;
+    ui.pushError = '';
+    refreshPushBox();
+    try {
+      if (Notification.permission !== 'granted' && (await Notification.requestPermission()) !== 'granted') {
+        throw new Error(permissionHelp());
+      }
+      const reg = await withTimeout(navigator.serviceWorker.ready, 10000, 'Pasito aún no está lista para avisos. Recarga la página y vuelve a intentarlo.');
+      let res;
+      try {
+        res = await fetch(`${api}/api/key`);
+      } catch (e) {
+        throw new Error(NET_ERROR);
+      }
+      const info = await res.json().catch(() => ({}));
+      if (!res.ok || !info.publicKey) throw new Error(info.error || 'Esa dirección no parece un servidor de avisos de Pasito.');
+      const key = b64uToBytes(info.publicKey);
+      let sub = await reg.pushManager.getSubscription();
+      if (sub && !sameBytes(sub.options && sub.options.applicationServerKey, key)) {
+        await sub.unsubscribe();
+        sub = null;
+      }
+      try {
+        if (!sub) await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      } catch (e) {
+        throw new Error(`Este navegador no pudo activar los avisos push (${(e && e.name) || 'error'}). Prueba con Chrome en Android o con Pasito instalada en iPhone.`);
+      }
+      push = { api, deviceId: push.deviceId || randomHex(16) };
+      savePush();
+      await pushSync(true);
+      if (push.lastError) throw new Error(push.lastError);
+      ui.pushDraft = null;
+      toast('Teléfono conectado. Pasito te avisará aunque esté cerrada.', { hand: true });
+    } catch (e) {
+      ui.pushError = (e && e.message) || 'No se pudo conectar.';
+      push = { deviceId: push.deviceId }; // sin conectar; se conserva el id para reutilizarlo al reintentar
+      savePush();
+    } finally {
+      ui.pushBusy = false;
+      refreshPushBox();
+    }
+  }
+
+  async function disconnectPush() {
+    const { api, deviceId } = push;
+    try { await fetch(`${api}/api/devices/${deviceId}`, { method: 'DELETE' }); } catch (e) { /* sin conexión: el servidor lo olvidará cuando el push falle */ }
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg && (await reg.pushManager.getSubscription());
+      if (sub) await sub.unsubscribe();
+    } catch (e) { /* ya no estaba suscrito */ }
+    push = { deviceId };
+    ui.pushDraft = api;
+    ui.pushError = '';
+    savePush();
+    refreshPushBox();
+    toast('Desconectado: este teléfono ya no recibirá avisos con la app cerrada.');
+  }
+
+  async function testPush() {
+    let res;
+    try {
+      res = await fetch(`${push.api}/api/devices/${push.deviceId}/test`, { method: 'POST' });
+    } catch (e) {
+      toast(NET_ERROR);
+      return;
+    }
+    const out = await res.json().catch(() => ({}));
+    if (out.gone || res.status === 404) {
+      push.lastError = 'Este teléfono ya no está suscrito. Pulsa «Desconectar» y vuelve a conectarlo.';
+      savePush();
+      refreshPushBox();
+      toast(push.lastError);
+      return;
+    }
+    toast(out.ok ? 'Aviso de prueba enviado: debería llegarte en unos segundos.' : `El servicio de push respondió con un error (${out.status || res.status}).`);
+  }
+
+  function pushSection() {
+    const title = '<h3>Avisos con la app cerrada</h3>';
+    const calendar = '<p class="hint">Para lo muy importante también puedes abrir la tarea y usar «Añadir a mi calendario».</p>';
+    if (EMBEDDED) return `${title}<p class="hint">Funcionan en Pasito instalada desde tu dirección de GitHub Pages, no en esta vista previa.</p>${calendar}`;
+    const support = pushSupport();
+    if (support === 'ios-install') return `${title}<p class="hint">En iPhone primero hay que instalar Pasito: botón Compartir → «Añadir a pantalla de inicio». Luego ábrela desde ese icono y vuelve aquí (iOS 16.4 o superior).</p>`;
+    if (support === 'no') return `${title}<p class="hint">Este navegador no admite avisos push. Prueba con Chrome en Android, o con Pasito instalada en iPhone.</p>${calendar}`;
+    if (!pushConnected()) {
+      const value = ui.pushDraft != null ? ui.pushDraft : push.api || CONFIG.pushApi || '';
+      return `${title}
+        <p class="hint">Para que el teléfono te avise aunque Pasito esté cerrada hace falta tu servidor de avisos (gratis). Los pasos están en el README del proyecto, sección «Avisos con la app cerrada».</p>
+        <label class="field"><span class="field-label">Dirección de tu servidor de avisos</span>
+          <input class="input" id="pushApi" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://pasito-avisos.tu-usuario.workers.dev" value="${esc(value)}"></label>
+        ${ui.pushError ? `<p class="hint push-error" role="alert">${esc(ui.pushError)}</p>` : ''}
+        <div class="row"><button class="btn primary" id="pushConnect" data-action="push-connect" ${ui.pushBusy ? 'aria-busy="true"' : ''}>${ui.pushBusy ? 'Conectando…' : 'Conectar este teléfono'}</button></div>
+        ${calendar}`;
+    }
+    const target = profileById(notifyTargetId());
+    const who = profiles.list.length > 1 && target ? ` de «${esc(target.name)}»` : '';
+    const synced = push.lastSyncAt ? `Última sincronización: ${L.fmtWhen(new Date(push.lastSyncAt).toISOString())}.` : 'Aún sin sincronizar.';
+    return `${title}
+      <p class="hint">${ICON.bell} Conectado: este dispositivo recibe los avisos${who} aunque Pasito esté cerrada. ${plural(push.scheduled || 0, 'aviso', 'avisos')} en los próximos 14 días. ${synced}</p>
+      ${push.lastError ? `<p class="hint push-error" role="alert">${esc(push.lastError)}</p>` : ''}
+      <div class="row">
+        <button class="btn" id="pushTest" data-action="push-test">Enviar aviso de prueba</button>
+        <button class="btn ghost" id="pushSyncNow" data-action="push-sync">Sincronizar ahora</button>
+        <button class="btn ghost danger-text" id="pushOff" data-action="push-disconnect">Desconectar</button>
+      </div>`;
+  }
+
+  function refreshPushBox() {
+    const box = $('pushBox');
+    if (!box) return;
+    const html = pushSection();
+    if (html === ui.pushHtml) return;
+    const focused = box.contains(document.activeElement) ? document.activeElement.id : '';
+    box.innerHTML = html;
+    ui.pushHtml = html;
+    if (focused) {
+      const el = $(focused) || box.querySelector('button');
+      if (el) el.focus({ preventScroll: true });
+    }
+  }
+
+  // Acciones que el service worker dejó en cola («Hecha», «En 10 min», tocar el aviso).
+  function takeQueuedActions() {
+    return new Promise(resolve => {
+      let req;
+      try {
+        req = indexedDB.open('pasito-sw', 1);
+      } catch (e) {
+        resolve([]);
+        return;
+      }
+      req.onupgradeneeded = () => req.result.createObjectStore('actions', { autoIncrement: true });
+      req.onerror = () => resolve([]);
+      req.onsuccess = () => {
+        const db = req.result;
+        try {
+          const tx = db.transaction('actions', 'readwrite');
+          const os = tx.objectStore('actions');
+          const all = os.getAll();
+          all.onsuccess = () => os.clear();
+          tx.oncomplete = () => {
+            db.close();
+            resolve(all.result || []);
+          };
+          tx.onerror = () => {
+            db.close();
+            resolve([]);
+          };
+        } catch (e) {
+          db.close();
+          resolve([]);
+        }
+      };
+    });
+  }
+
+  // Completar una tarea de un perfil que no está abierto (mismo efecto que completeTask, sin interfaz).
+  function completeRaw(data, t, at) {
+    const stars = L.STARS[t.energy] || 3;
+    const iso = new Date(at).toISOString();
+    Object.assign(t, { done: true, doneAt: iso, snoozes: 0, nagAt: null, nags: 0 });
+    data.stars = (Number(data.stars) || 0) + stars;
+    data.log = Array.isArray(data.log) ? data.log : [];
+    data.log.push({ at: iso, kind: 'task', id: t.id, title: t.title, stars });
+    if (t.repeat && t.repeat !== 'none' && t.remindAt) {
+      t.prevRemindAt = t.remindAt;
+      t.remindAt = L.nextOccurrence(t.remindAt, t.repeat, at);
+      t.notified = false;
+    }
+  }
+
+  // Si el aviso ya había llegado cuando se tocó o descartó, la app lo da por atendido (no vuelve a sonar al abrirla).
+  const handled = (t, at) => t.remindAt && Date.parse(t.remindAt) <= at;
+
+  let draining = false;
+  async function drainActions() {
+    if (draining || EMBEDDED || !('indexedDB' in window)) return;
+    draining = true;
+    try {
+      const actions = await takeQueuedActions();
+      let changed = false;
+      for (const a of actions) {
+        if (!a || !a.taskId) continue;
+        const at = Number(a.at) || Date.now();
+        if (!a.pid || a.pid === profiles.active) {
+          const t = byId(a.taskId);
+          if (!t) continue;
+          resetIfDue(t, at); // varios «Hecha» de una rutina, uno por día
+          catchUp(t, at);
+          if (t.done) continue;
+          if (a.type === 'done') completeTask(t, null, at);
+          else if (a.type === 'snooze') {
+            Object.assign(t, { remindAt: new Date(a.until).toISOString(), notified: false, snoozes: (t.snoozes || 0) + 1 });
+            clearNag(t);
+            ui.reminderQueue = ui.reminderQueue.filter(x => x !== t.id);
+          } else if ((a.type === 'open' || a.type === 'dismiss') && handled(t, at)) {
+            t.notified = true;
+            clearNag(t);
+            ui.reminderQueue = ui.reminderQueue.filter(x => x !== t.id);
+            if (a.type === 'open' && activeNotifies()) {
+              ui.reminderQueue.push(t.id);
+              ui.remNote = pick(MSG.reminder);
+            }
+          } else continue;
+          changed = true;
+          continue;
+        }
+        const data = readProfileState(a.pid);
+        const t = data && data.tasks.find(x => x && x.id === a.taskId);
+        const p = profileById(a.pid);
+        if (!t || !p) continue;
+        resetIfDue(t, at);
+        catchUp(t, at);
+        if (t.done) continue;
+        if (a.type === 'done') {
+          completeRaw(data, t, at);
+          toast(`«${t.title}» hecha en «${p.name}».`, { stars: L.STARS[t.energy] || 3, hand: true });
+        } else if (a.type === 'snooze') {
+          Object.assign(t, { remindAt: new Date(a.until).toISOString(), notified: false, nagAt: null, nags: 0, snoozes: (t.snoozes || 0) + 1 });
+        } else if ((a.type === 'open' || a.type === 'dismiss') && handled(t, at)) {
+          Object.assign(t, { notified: true, nagAt: null, nags: 0 });
+          ui.extQueue = ui.extQueue.filter(x => !(x.pid === a.pid && x.taskId === t.id));
+          if (a.type === 'open' && notifyTargetId() === a.pid) ui.extQueue.push({ pid: a.pid, taskId: t.id });
+        } else continue;
+        store.set(stateKey(a.pid), JSON.stringify(data));
+        changed = true;
+      }
+      if (changed) {
+        save();
+        render();
+      }
+    } finally {
+      draining = false;
+    }
   }
 
   /* ---------- Eventos ---------- */
@@ -2168,6 +2574,10 @@
       renderReminder();
     },
     'notify-here'() { setNotifyTarget(profiles.active); },
+    'push-connect'() { connectPush(); },
+    'push-disconnect'() { disconnectPush(); },
+    'push-test'() { testPush(); },
+    'push-sync'() { pushSync(true).then(() => toast(push.lastError ? push.lastError : 'Avisos sincronizados.')); },
     'go-profiles'() { openSheet('profiles', $('profileBtn')); },
     'toast-act'(t, btn) {
       const run = toastActions.get(btn.dataset.toast);
@@ -2569,14 +2979,22 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       if (saveTimer) save();
+      flushPushNow();
       return;
     }
     state.lastVisit = Date.now();
-    tick();
+    // Primero lo que se hizo desde las notificaciones; después, lo que toque sonar.
+    drainActions().then(() => {
+      tick();
+      schedulePushSync();
+    });
     ensureTimer();
     if (state.focus.phase === 'running') requestWake();
   });
-  window.addEventListener('pagehide', () => { if (saveTimer) save(); });
+  window.addEventListener('pagehide', () => {
+    if (saveTimer) save();
+    flushPushNow();
+  });
 
   // Si Pasito está abierto en dos pestañas, la otra se actualiza sola.
   window.addEventListener('storage', e => {
@@ -2592,6 +3010,12 @@
       else render();
     } else if (e.key && e.key === stateKey(notifyTargetId()) && notifyTargetId() !== profiles.active) {
       renderReminder(); // otra pestaña cambió el perfil que avisa: quitar tarjetas de tareas ya hechas
+    } else if (e.key === PUSH_KEY) {
+      // Otra pestaña conectó o desconectó: se toma su configuración, pero no su lastHash (cada pestaña sabe lo que envió).
+      let other = {};
+      try { other = JSON.parse(e.newValue) || {}; } catch (err) { other = {}; }
+      push = Object.assign({}, other, { lastHash: push.lastHash, lastSyncAt: push.lastSyncAt || other.lastSyncAt });
+      refreshPushBox();
     } else if (e.key === PROFILES_KEY) {
       const keep = profiles.active;
       profiles = loadProfiles();
@@ -2616,11 +3040,19 @@
   save();
   render();
   ensureTimer();
-  tick();
   setInterval(tick, 15000);
   if (away > 2 * L.DAY) setTimeout(() => toast(pick(MSG.welcomeBack), { hand: true }), 600);
 
   if (!EMBEDDED && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => { /* sin modo sin conexión */ });
+    navigator.serviceWorker.addEventListener('message', e => {
+      const m = e.data || {};
+      if (m.type === 'pasito-actions') drainActions();
+      else if (m.type === 'pasito-push') tick(); // llegó un aviso con Pasito delante: lo muestra la propia app
+    });
   }
+  drainActions().then(() => {
+    tick();
+    schedulePushSync(true);
+  });
 })();

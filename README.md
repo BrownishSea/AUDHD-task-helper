@@ -50,10 +50,33 @@ Sirve para compartir el dispositivo con otra persona o para separar contextos (p
 ## Recordatorios: lo que hay que saber
 
 1. Pulsa **Activar avisos** (en Hoy o en Ajustes) y acepta el permiso del navegador.
-2. Los avisos funcionan **mientras Pasito esté abierto**, aunque sea en otra pestaña o minimizado.
-3. **Con el navegador cerrado ninguna web puede avisarte.** Para lo importante abre la tarea → **«Añadir a mi calendario»**:
-   se descarga un `.ics` que tu calendario (Google, Apple, Outlook) importa con su propia alarma.
+2. Sin nada más, los avisos funcionan **mientras Pasito esté abierta**, aunque sea en otra pestaña o minimizada.
+3. **Para que el teléfono te avise con Pasito cerrada**, crea tu servidor de avisos gratis (unos 10 minutos, una sola vez)
+   y conecta el teléfono. Mira la sección siguiente.
 4. En iPhone/iPad las notificaciones solo funcionan si instalas Pasito en la pantalla de inicio (iOS 16.4 o superior).
+5. Alternativa sin servidor para lo muy importante: abre la tarea → **«Añadir a mi calendario»** (un `.ics` con su propia alarma).
+
+## Avisos con la app cerrada (notificaciones en el teléfono)
+
+Una web no puede despertarse sola cuando está cerrada: hace falta un pequeño servidor que le envíe la notificación
+a su hora. Pasito trae uno listo en la carpeta [`server/`](server/), pensado para el **plan gratuito de Cloudflare**.
+
+1. **Crea tu servidor** siguiendo [`server/README.md`](server/README.md). Se puede hacer todo desde el navegador,
+   sin instalar nada. Al terminar tendrás una dirección del tipo `https://pasito-avisos.tu-usuario.workers.dev`.
+2. (Opcional) Pega esa dirección en [`config.js`](config.js) (`pushApi: '...'`) y súbelo: así ningún teléfono te la pedirá.
+3. En el teléfono, abre **Pasito instalada** → *Ajustes* → *Avisos con la app cerrada* → **Conectar este teléfono**
+   → acepta el permiso → **Enviar aviso de prueba**.
+
+Qué llega y cómo:
+
+- Los avisos del **perfil que avisa**, sus rutinas (los próximos 14 días) y, si tienes «Insistir», dos recordatorios más.
+- En Android la notificación trae **Hecha** (cuenta como hecha, con sus estrellas, al abrir Pasito) y **En 10 min**.
+  En iPhone, tocarla abre Pasito con el aviso delante.
+- En Android, si Pasito está abierta y delante, el aviso sale dentro de la app en vez de como notificación, para no repetirlo.
+  En iPhone siempre llega también la notificación (Safari lo exige).
+- Las rutinas se programan para 14 días. Antes de que se acaben llega un aviso para que abras Pasito un momento y se renueven;
+  en la práctica, con abrirla de vez en cuando basta.
+- El contenido va cifrado de extremo a extremo; tu servidor solo guarda la hora, el título y el primer paso de cada aviso.
 
 ## Cómo publicarlo (gratis, con GitHub Pages)
 
@@ -85,6 +108,10 @@ npm start            # abre http://localhost:8080
 
 ### Lista rápida para probar a mano (5 minutos)
 
+> Para probar los avisos con la app cerrada, primero conecta el teléfono (sección anterior), ponte una tarea
+> `probar en 2 minutos`, cierra Pasito del todo y espera.
+
+
 1. Elige tu **batería** en Hoy → pulsa **Dime qué hago ahora** → **Empezar 5 minutos**.
 2. Escribe `probar aviso en 1 minuto`, pulsa Enter, **activa los avisos** y espera: debe salir el aviso con sonido.
    No lo toques y en 10 minutos insistirá.
@@ -97,7 +124,7 @@ npm start            # abre http://localhost:8080
 ### Pruebas automáticas
 
 ```bash
-npm test             # lógica (fechas, captura, sugerencias…), sin dependencias
+npm test             # lógica y servidor de avisos (cifrado, firma, envío), sin dependencias
 npm run test:e2e     # recorre la app en Chromium; necesita: npm i -D playwright && npx playwright install chromium
 ```
 

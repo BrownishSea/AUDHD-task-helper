@@ -1,0 +1,19 @@
+# Pasito · servidor de avisos. Pasos completos en server/README.md.
+name = "pasito-avisos"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+# Cada minuto revisa si hay avisos que enviar.
+[triggers]
+crons = ["* * * * *"]
+
+# Espacio KV donde se guardan las suscripciones y los avisos programados.
+# Créalo con:  npx wrangler kv namespace create PASITO   y pega aquí el id que te devuelve.
+[[kv_namespaces]]
+binding = "PASITO"
+id = "PEGA_AQUI_EL_ID_DEL_KV"
+
+[vars]
+# Recomendado: la dirección de tu Pasito (por ejemplo "https://tu-usuario.github.io"), sin barra final.
+# Vacío = se acepta cualquier origen.
+ALLOWED_ORIGIN = ""

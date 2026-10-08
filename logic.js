@@ -7,6 +7,7 @@
   'use strict';
 
   const DAY = 86400000;
+  const MINUTE = 60000;
   const STARS = { low: 2, med: 3, high: 5 };
   const LEVELS = ['Semilla', 'Brote', 'Plantita', 'Arbusto', 'Árbol', 'Bosque'];
   const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
@@ -198,6 +199,75 @@
     return exists(meta.active) ? meta.active : meta.list[0].id;
   }
 
+  // Una rutina sin marcar no se queda atascada en un día viejo: si ya le tocó otra vez, su aviso pasa a la vez más
+  // reciente (para que vuelva a sonar, en la app y en el servidor). Devuelve la nueva hora o null si no cambia.
+  function catchUpRepeat(task, now = Date.now()) {
+    if (!task || task.done || !task.repeat || task.repeat === 'none' || !task.remindAt) return null;
+    let at = Date.parse(task.remindAt);
+    if (!Number.isFinite(at)) return null;
+    let latest = null;
+    for (let i = 0; i < 1000; i++) {
+      const next = Date.parse(nextOccurrence(new Date(at).toISOString(), task.repeat, at));
+      if (!(next <= now)) break;
+      latest = next;
+      at = next;
+    }
+    return latest === null ? null : new Date(latest).toISOString();
+  }
+
+  // Avisos que el servidor enviará con la app cerrada (solo del perfil que avisa). Incluye las repeticiones de los
+  // próximos `days` días y, con `nag`, dos insistencias (+10 y +20 min) por aviso. Si la app ya hizo sonar el aviso
+  // actual (notified), solo queda su próxima insistencia (nagAt), que la app actualiza cuando se responde.
+  function pushSchedule(tasks, opts = {}) {
+    const now = opts.now != null ? opts.now : Date.now();
+    const horizon = now + (opts.days || 14) * DAY;
+    const nag = opts.nag !== false;
+    const who = opts.profileName ? `${opts.profileName} · ` : '';
+    const again = `${who}Te lo recuerdo otra vez, sin presión.`;
+    const out = [];
+    for (const t of tasks || []) {
+      if (!t || !t.id || !t.remindAt) continue;
+      const repeats = t.repeat && t.repeat !== 'none';
+      if (t.done && !repeats) continue;
+      const first = Date.parse(t.remindAt);
+      if (!Number.isFinite(first)) continue;
+      const step = !t.done && (t.steps || []).find(s => s && !s.done);
+      const base = { title: String(t.title || 'Pasito').slice(0, 120), tag: `pasito-${t.id}`, taskId: t.id, pid: opts.pid || '' };
+      const body = who + (step ? `Empieza por: ${step.text}` : 'Es el momento. Un pasito basta.');
+      let at = first;
+      for (let guard = 0; at <= horizon && guard < 60; guard++) {
+        if (at === first && t.notified && !t.done) {
+          // Ya sonó en la app: quedan sus insistencias pendientes, desde la próxima (nagAt).
+          const nagAt = t.nagAt ? Date.parse(t.nagAt) : NaN;
+          if (nag && nagAt > now) {
+            for (let k = (t.nags || 0) + 1, i = 0; k <= 2; k++, i++) {
+              out.push(Object.assign({}, base, { key: `${t.id}:${at}:n${k}`, at: nagAt + i * 10 * MINUTE, body: again, nag: k }));
+            }
+          }
+        } else if (at > now) {
+          out.push(Object.assign({}, base, { key: `${t.id}:${at}`, at, body, nag: 0, repeat: repeats }));
+          if (nag) {
+            out.push(Object.assign({}, base, { key: `${t.id}:${at}:n1`, at: at + 10 * MINUTE, body: again, nag: 1 }));
+            out.push(Object.assign({}, base, { key: `${t.id}:${at}:n2`, at: at + 20 * MINUTE, body: again, nag: 2 }));
+          }
+        }
+        if (!repeats) break;
+        at = Date.parse(nextOccurrence(new Date(at).toISOString(), t.repeat, at));
+      }
+    }
+    out.sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1));
+    const kept = out.slice(0, opts.max || 250);
+    // El servidor solo tiene lo que Pasito le envió. Antes de que se acaben las rutinas programadas,
+    // un aviso para abrir la app un momento y renovar la lista.
+    const lastRoutine = kept.filter(x => x.nag === 0 && x.repeat).pop();
+    if (lastRoutine) {
+      kept.push({ key: 'pasito-refresh', at: Math.max(now + DAY / 2, lastRoutine.at - DAY / 2), title: 'Pasito',
+        body: 'Abre Pasito un momento para seguir recibiendo tus avisos.', tag: 'pasito-refresh', taskId: '', pid: opts.pid || '', nag: 0 });
+      kept.sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1));
+    }
+    return kept.map(x => { const rest = { ...x }; delete rest.repeat; return rest; });
+  }
+
   // Texto para buscar sin importar mayúsculas ni tildes.
   const searchKey = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
@@ -330,6 +400,6 @@
   return {
     DAY, STARS, LEVELS,
     dayKey, dayDiff, addDays, fmtTime, toLocalInput, fmtWhen, fmtDay, fmtLongDate,
-    parseQuickInput, nextAt, searchKey, isSafePhoto, squareCrop, notifyTarget, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
+    parseQuickInput, nextAt, searchKey, isSafePhoto, squareCrop, notifyTarget, pushSchedule, catchUpRepeat, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
   };
 });

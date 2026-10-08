@@ -5,7 +5,9 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const { pathToFileURL } = require('node:url');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { memoryKV, fakeSubscription, decrypt } = require('./push-helpers.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -26,7 +28,8 @@ function serve() {
 (async () => {
   const server = await serve();
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
-  const browser = await chromium.launch();
+  // El Chromium completo (modo «headless» nuevo) admite notificaciones; el «headless shell» las deniega siempre.
+  const browser = await chromium.launch({ channel: 'chromium' }).catch(() => chromium.launch());
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'es-ES' });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -439,6 +442,140 @@ function serve() {
     await run(() => {
       Storage.prototype.setItem = function () { throw new DOMException('bloqueado', 'SecurityError'); };
     }, true, null);
+  });
+
+  await step('avisos con la app cerrada: conectar, programar, enviar, mostrar y aplicar «Hecha» o descartar', async () => {
+    const worker = (await import(pathToFileURL(path.join(ROOT, 'server', 'worker.js')).href)).default;
+    const env = { PASITO: memoryKV() };
+    const fake = await fakeSubscription();
+    const origin = new URL(url).origin;
+    const pushed = [];
+    const realFetch = globalThis.fetch;
+    const waitFor = async (fn, what) => {
+      for (let i = 0; i < 80; i++) {
+        if (await fn()) return;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      throw new Error(`no ocurrió: ${what}`);
+    };
+    // El servicio de push (FCM) simulado: el Worker le envía los avisos cifrados.
+    globalThis.fetch = async (u, init) => {
+      pushed.push({ url: String(u), init });
+      return new Response(null, { status: 201 });
+    };
+    try {
+      await context.grantPermissions(['notifications'], { origin });
+      // El servidor de avisos real (server/worker.js) atiende las peticiones de la página.
+      await page.route('https://avisos.test/**', async route => {
+        const req = route.request();
+        const hasBody = !['GET', 'HEAD', 'OPTIONS'].includes(req.method());
+        const res = await worker.fetch(new Request(req.url(), { method: req.method(), headers: req.headers(), body: hasBody ? req.postData() || '' : undefined }), env);
+        await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
+      });
+      // Chromium de pruebas no tiene servicio de push: la suscripción se simula con claves que la prueba conoce.
+      await page.addInitScript(sub => {
+        const KEY = '__fakePushKey';
+        const make = key => ({
+          endpoint: sub.endpoint,
+          options: { applicationServerKey: key },
+          toJSON: () => ({ endpoint: sub.endpoint, expirationTime: null, keys: sub.keys }),
+          unsubscribe: async () => { localStorage.removeItem(KEY); return true; },
+        });
+        PushManager.prototype.subscribe = async function (opts) {
+          const k = new Uint8Array(opts.applicationServerKey);
+          localStorage.setItem(KEY, JSON.stringify(Array.from(k)));
+          return make(k.buffer);
+        };
+        PushManager.prototype.getSubscription = async function () {
+          const saved = localStorage.getItem(KEY);
+          return saved ? make(new Uint8Array(JSON.parse(saved)).buffer) : null;
+        };
+      }, fake.subscription);
+      await page.reload();
+      await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+
+      await page.fill('#captureInput', 'Probar aviso push en 30 min');
+      await page.press('#captureInput', 'Enter');
+      await page.click('#settingsBtn');
+      await page.fill('#pushApi', 'avisos.test/'); // sin https ni barra final: se corrige solo
+      await page.click('#pushConnect');
+      await page.waitForSelector('.toast:has-text("Teléfono conectado")');
+      const cfg = await page.evaluate(() => JSON.parse(localStorage.getItem('pasito-push')));
+      assert.equal(cfg.api, 'https://avisos.test');
+      assert.match(cfg.deviceId, /^[a-f0-9]{32}$/);
+      const docKey = `dev:${cfg.deviceId}`;
+      const mine = (await env.PASITO.get(docKey, 'json')).reminders.filter(r => r.title === 'Probar aviso push');
+      assert.deepEqual(mine.map(r => r.nag), [0, 1, 2], 'aviso y dos insistencias programados en el servidor');
+      assert.ok(await page.isVisible('#pushBox >> text=Conectado'));
+      await shot('11-avisos-telefono');
+
+      // A su hora, el cron envía el aviso cifrado al servicio de push.
+      const pending = [];
+      await worker.scheduled({ scheduledTime: mine[0].at + 1000 }, env, { waitUntil: p => pending.push(p) });
+      await Promise.all(pending);
+      const sent = pushed.filter(x => x.url === fake.subscription.endpoint);
+      assert.equal(sent.length, 1);
+      const payload = (await decrypt(sent[0].init.body, fake)).json;
+      assert.equal(payload.title, 'Probar aviso push');
+      assert.equal(payload.api, 'https://avisos.test');
+      assert.equal(payload.device, cfg.deviceId);
+
+      // Con Pasito cerrada, el service worker muestra la notificación con «Hecha» y «En 10 min».
+      const cdp = await context.newCDPSession(page);
+      const regs = [];
+      cdp.on('ServiceWorker.workerRegistrationUpdated', e => regs.push(...e.registrations));
+      await cdp.send('ServiceWorker.enable');
+      await page.waitForTimeout(300);
+      const reg = regs.find(r => !r.isDeleted && r.scopeURL.startsWith(origin));
+      assert.ok(reg, 'service worker registrado');
+      await page.goto('about:blank');
+      await cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId: reg.registrationId, data: JSON.stringify(payload) });
+      await page.waitForTimeout(500);
+      await page.goto(url);
+      const notes = await page.evaluate(async () => (await (await navigator.serviceWorker.ready).getNotifications())
+        .map(n => ({ title: n.title, body: n.body, tag: n.tag, actions: (n.actions || []).map(a => a.action).join() })));
+      assert.ok(notes.some(n => n.title === 'Probar aviso push' && n.tag === payload.tag && n.actions === 'done,snooze'), JSON.stringify(notes));
+
+      // «Hecha» en la notificación: el service worker lo deja en cola y Pasito lo aplica al volver, con sus estrellas.
+      const before = (await data()).state.stars;
+      const queue = action => page.evaluate(a => new Promise((resolve, reject) => {
+        const req = indexedDB.open('pasito-sw', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('actions', { autoIncrement: true });
+        req.onsuccess = () => {
+          const tx = req.result.transaction('actions', 'readwrite');
+          tx.objectStore('actions').add(a);
+          tx.oncomplete = () => { req.result.close(); resolve(); };
+          tx.onerror = () => reject(tx.error);
+        };
+      }), action);
+      await queue({ type: 'done', pid: payload.pid, taskId: payload.taskId, at: Date.now() });
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await waitFor(async () => (await data()).state.tasks.find(t => t.id === payload.taskId).done, 'la tarea queda hecha');
+      assert.equal((await data()).state.stars, before + 3);
+      await waitFor(async () => !(await env.PASITO.get(docKey, 'json')).reminders.some(r => r.taskId === payload.taskId), 'el servidor deja de tenerla programada');
+
+      // Descartar la notificación ya sonada: cuenta como atendida, sin insistencias en la app ni en el servidor.
+      await page.fill('#captureInput', 'Descartar aviso push en 40 min');
+      await page.press('#captureInput', 'Enter');
+      const other = (await data()).state.tasks.find(t => t.title === 'Descartar aviso push');
+      await waitFor(async () => (await env.PASITO.get(docKey, 'json')).reminders.some(r => r.taskId === other.id), 'el servidor programa la segunda');
+      await queue({ type: 'dismiss', pid: payload.pid, taskId: other.id, at: Date.parse(other.remindAt) + 1000 });
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await waitFor(async () => (await data()).state.tasks.find(t => t.id === other.id).notified, 'descartar la da por atendida');
+      assert.equal((await data()).state.tasks.find(t => t.id === other.id).nagAt, null);
+      await waitFor(async () => !(await env.PASITO.get(docKey, 'json')).reminders.some(r => r.taskId === other.id), 'el servidor quita sus avisos');
+
+      // Desconectar borra el dispositivo del servidor.
+      await page.click('#settingsBtn');
+      await page.click('#pushOff');
+      await waitFor(async () => (await env.PASITO.get(docKey, 'json')) === null, 'el servidor olvida el dispositivo');
+      await page.waitForSelector('#pushConnect');
+      assert.equal(await page.evaluate(() => localStorage.getItem('__fakePushKey')), null, 'suscripción cancelada');
+      await page.keyboard.press('Escape');
+    } finally {
+      globalThis.fetch = realFetch;
+      await page.unroute('https://avisos.test/**');
+    }
   });
 
   await step('modo oscuro y ancho de móvil pequeño sin desbordes', async () => {

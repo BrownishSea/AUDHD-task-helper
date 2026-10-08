@@ -321,6 +321,7 @@ textarea.input { min-height: 4.5rem; resize: vertical; }
 .sheet-body { display: flex; flex-direction: column; gap: 1.5rem; }
 .set-group { display: flex; flex-direction: column; gap: .6rem; margin: 0; padding: 0; border: 0; }
 .set-group h3, .set-group legend { margin-bottom: .1rem; padding: 0; font: 600 1.02rem/1.2 var(--f-display); }
+.push-error { color: var(--coral); font-weight: 700; }
 .confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; color: var(--coral); font-weight: 700; }
 
 /* ---------- Perfiles ---------- */
