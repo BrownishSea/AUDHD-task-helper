@@ -24,17 +24,26 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
 | `sw.js` | Service worker: caché red-primero para uso sin conexión y `notificationclick`. Sube `CACHE` si cambias la lista de assets. |
 | `manifest.webmanifest`, `icon.svg`, `icon-192.png`, `icon-512.png` | PWA instalable. Los PNG se generaron desde `icon.svg` con Playwright. |
 | `tests/logic.test.js` | Pruebas `node:test` de `logic.js`. `npm test`. |
+| `tests/e2e.js` | Recorrido completo en Chromium con Playwright (servidor estático propio). `npm run test:e2e`; `PLAYWRIGHT_MODULE` apunta a un Playwright global, `SHOTS_DIR` guarda capturas. |
 
 ## Arquitectura de `app.js`
 
-- **Estado** (`state`, en `localStorage['pasito-v1']`):
-  `{ version, lists[], tasks[], log[], stars, battery:{day,level}, focus:{taskId,minutes,lastMinutes,isBreak,phase,endAt,remaining,total}, settings:{sound,calm,theme}, lastVisit }`.
-  Tarea: `{ id, title, notes, list, energy:'low'|'med'|'high', minutes, remindAt(ISO), repeat:'none'|'daily'|'weekdays'|'weekly', today, steps[{id,text,done}], done, doneAt, notified, snoozes, createdAt, example?, prevRemindAt? }`.
-  `log[]`: `{ at, kind:'task'|'step'|'focus', id?, title, stars, minutes? }`, en orden cronológico (se usa para Logros y para quitar estrellas al desmarcar).
-  `normalize()` rellena campos que falten. Si cambias el esquema, migra ahí (y sube `version` si hace falta).
+- **Perfiles**: `localStorage['pasito-perfiles'] = { active, list:[{id,name,color}] }` y un estado por perfil en
+  `localStorage['pasito-v1:<id>']`. `loadProfiles()` migra la clave antigua `pasito-v1` (v1, sin perfiles) al primer perfil.
+  `activateProfile()` guarda, pausa el enfoque, carga el otro estado, limpia `ui` y toasts y vuelve a Hoy.
+  `checkOtherProfiles()` (en cada `tick`) dispara los avisos vencidos de los perfiles inactivos como toast + notificación.
+  Los colores se validan contra `PROFILE_COLORS` (`safeColor`) porque van a un `style`.
+- **Estado** de un perfil (`state`, versión 2):
+  `{ version, lists[], tasks[], log[], stars, battery:{day,level}, focus:{taskId,minutes,lastMinutes,isBreak,phase,endAt,remaining,total}, settings:{sound,calm,theme,nag,goal}, lastVisit }`.
+  Tarea: `{ id, title, notes, list, energy:'low'|'med'|'high', minutes, remindAt(ISO), repeat:'none'|'daily'|'weekdays'|'weekly', today, steps[{id,text,done}], done, doneAt, notified, nagAt, nags, snoozes, createdAt, example?, prevRemindAt? }`.
+  `log[]`: `{ at, kind:'task'|'step'|'focus'|'win', id?, title, stars, minutes? }`, en orden cronológico. «Logros» = todo lo que no es `step`.
+  `normalize()` rellena y sanea campos (también al importar). Si cambias el esquema, migra ahí y sube `version`.
 - **UI efímera** en `ui` (pestaña, tareas abiertas, filtro, cola de avisos, etc.). La pestaña va en `location.hash`.
 - **Render**: `render()` reescribe `#view` con `viewHoy/viewTareas/viewEnfoque/viewLogros` (template strings; usa siempre `esc()`).
-  Restaura el foco por `id`, así que **todo control de formulario necesita un `id` estable**.
+  Restaura el foco y el cursor por `id`, así que **todo control necesita un `id` estable y único** (`taskRow` usa `ctx` como prefijo
+  porque la misma tarea puede salir dos veces). Ajustes y Perfiles son una sola hoja (`#sheet`, `renderSheet()`).
+- **Insistencia**: `fireReminder()` programa `nagAt` (+10 min, máx. `NAG_MAX`); cualquier respuesta (hecha, posponer, empezar,
+  cerrar, cambiar la hora) llama a `clearNag()`.
 - **Eventos delegados** en `document`: `click` → `actions[data-action](task, btn)` (la tarea sale del `[data-id]` más cercano),
   `submit` (captura, pasos, nueva lista), `input` (título/notas sin re-render), `change` (resto de campos → `save()` + `render()`).
 - **Recordatorios**: `tick()` cada 15 s y al volver a la pestaña. Si `remindAt <= ahora` y `!notified`: marca `notified` y, si pasó
@@ -43,6 +52,7 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
 - **Repeticiones**: al completar, `remindAt` salta a `L.nextOccurrence()` y se guarda `prevRemindAt` para poder desmarcar.
   La tarea vuelve a pendiente (con pasos reiniciados) el día de su siguiente aviso.
 - **Enfoque**: basado en `endAt` (sobrevive a recargas). Wake Lock mientras corre. Termina en `focusFinish()` (+2 ★ si ≥ 5 min y no es descanso).
+- **Varias pestañas**: el evento `storage` recarga el estado si otra pestaña lo cambia.
 - **Incrustado** (`EMBEDDED`, dentro de un iframe como la vista previa de claude.ai): sin service worker, sin descargas
   (`.ics`, copia JSON), sin banner de avisos. La copia se hace por portapapeles o pegando texto.
 
@@ -53,17 +63,25 @@ npm test                                   # lógica pura
 npx http-server -c-1 -p 8080 .             # luego abre http://localhost:8080
 ```
 
-Prueba manual mínima (o con Playwright, que viene instalado en el entorno de Claude Code en la nube):
-capturar «llamar a mamá mañana a las 5» → aparece en Bandeja con aviso mañana 17:00; batería Baja → sugerencia;
-marcar paso/tarea → estrellas y confeti; borrar → Deshacer; Enfoque 5 min → el título de la pestaña muestra la cuenta atrás;
-poner `remindAt` en el pasado y recargar → aparece la hoja de aviso; revisar a 360 px de ancho y en modo oscuro.
+En el entorno de Claude Code en la nube Playwright ya está instalado de forma global:
+
+```bash
+PLAYWRIGHT_MODULE=/opt/node22/lib/node_modules/playwright SHOTS_DIR=/tmp/capturas npm run test:e2e
+```
+
+`tests/e2e.js` cubre: migración v1→perfiles, ejemplos, sugerencia por batería, captura relativa, pasos/estrellas/deshacer,
+vaciar la cabeza, rutinas, búsqueda sin tildes, enfoque + ruido marrón, logro manual, aviso vencido + posponer + insistencia,
+perfiles (crear, aislar datos, aviso cruzado, volver, borrar y deshacer), modo oscuro sin desbordes a 360 px y cero errores JS.
+La guía para publicar en GitHub Pages está en el README.
 
 ## Limitaciones conocidas e ideas siguientes
 
 - Sin servidor no hay notificaciones con la app cerrada (no hay Push). El `.ics` es la alternativa.
   Siguiente paso posible: Web Push con un backend mínimo, o Notification Triggers si algún navegador lo implementa.
-- Sin sincronización entre dispositivos (solo copia/restauración manual).
+- Sin sincronización entre dispositivos (solo copia/restauración manual por perfil). Perfiles sin contraseña.
 - El parser de captura es heurístico: «a las 1–6» sin «de la mañana» se entiende como tarde (13–18 h). No entiende fechas como «el 15».
 - `.ics` no pliega líneas de más de 75 octetos (los calendarios principales lo toleran).
-- Ideas útiles para TDAH aún sin hacer: reordenar por arrastre, plantillas de rutinas (mañana/noche), «body doubling» con sonido ambiente,
-  revisión semanal guiada, recordatorios escalonados (avisar otra vez si no se atiende), estimación vs. tiempo real.
+- Hecho en v1.1: perfiles, insistencia de avisos, «Vaciar la cabeza», rutinas, búsqueda, ruido marrón, logros manuales, meta ajustable,
+  tiempos relativos en la captura.
+- Ideas siguientes: reordenar por arrastre, revisión semanal guiada paso a paso, ordenar la Bandeja de una en una,
+  estimación vs. tiempo real, rutinas propias guardadas como plantilla, PIN opcional por perfil.

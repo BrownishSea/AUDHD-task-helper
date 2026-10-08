@@ -86,6 +86,10 @@
   const WEEKDAY_RE = /\s(?:el\s+)?(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)(?=\s)/i;
   const WEEKDAY_INDEX = { domingo: 0, lunes: 1, martes: 2, miércoles: 3, miercoles: 3, jueves: 4, viernes: 5, sábado: 6, sabado: 6 };
 
+  const RELATIVE = /\s(?:en|dentro\s+de)\s+(\d{1,3}|una?|media)\s*(minutos?|mins?|horas?|h)(?=\s)/i;
+
+  const cleanTitle = (s, fallback) => s.replace(/\s+/g, ' ').trim().replace(/^[,.;:\-–]+\s*|\s*[,.;:\-–]+$/g, '') || fallback;
+
   function parseQuickInput(text, now = new Date()) {
     const base = new Date(now);
     const original = String(text).trim();
@@ -95,6 +99,18 @@
     let dayOffset = null;
     let defaultHour = 9;
     let partOfDay = false;
+
+    // "en 20 minutos", "dentro de 2 horas", "en media hora"
+    const rel = s.match(RELATIVE);
+    if (rel) {
+      const amount = rel[1].toLowerCase() === 'media' ? 0.5 : /^una?$/i.test(rel[1]) ? 1 : Number(rel[1]);
+      const mins = /^h/i.test(rel[2]) ? amount * 60 : amount;
+      if (mins > 0 && mins <= 24 * 60) {
+        const d = new Date(base.getTime() + mins * 60000);
+        d.setSeconds(0, 0);
+        return { title: cleanTitle(s.replace(rel[0], ' '), original), remindAt: d.toISOString(), today: false };
+      }
+    }
 
     for (const re of TIME_PATTERNS) {
       const m = s.match(re);
@@ -116,31 +132,31 @@
       break;
     }
 
-    const part = s.match(/\sesta\s+(mañana|tarde|noche)(?=\s)/i);
+    // "esta tarde", "por la mañana" (antes que "mañana" como día)
+    const part = s.match(/\s(?:esta|por\s+la)\s+(mañana|tarde|noche)(?=\s)/i);
     if (part) {
-      dayOffset = 0;
       partOfDay = true;
       defaultHour = { mañana: 9, tarde: 18, noche: 21 }[part[1].toLowerCase()];
       s = s.replace(part[0], ' ');
-    } else {
-      const days = [[/\spasado\s+mañana(?=\s)/i, 2], [/\smañana(?=\s)/i, 1], [/\shoy(?=\s)/i, 0]];
-      for (const [re, off] of days) {
-        const m = s.match(re);
-        if (m) {
-          dayOffset = off;
-          s = s.replace(m[0], ' ');
-          break;
-        }
-      }
-      if (dayOffset === null) {
-        const m = s.match(WEEKDAY_RE);
-        if (m) {
-          const target = WEEKDAY_INDEX[m[1].toLowerCase()];
-          dayOffset = (target - base.getDay() + 7) % 7 || 7;
-          s = s.replace(m[0], ' ');
-        }
+    }
+    const days = [[/\spasado\s+mañana(?=\s)/i, 2], [/\smañana(?=\s)/i, 1], [/\shoy(?=\s)/i, 0]];
+    for (const [re, off] of days) {
+      const m = s.match(re);
+      if (m) {
+        dayOffset = off;
+        s = s.replace(m[0], ' ');
+        break;
       }
     }
+    if (dayOffset === null) {
+      const m = s.match(WEEKDAY_RE);
+      if (m) {
+        const target = WEEKDAY_INDEX[m[1].toLowerCase()];
+        dayOffset = (target - base.getDay() + 7) % 7 || 7;
+        s = s.replace(m[0], ' ');
+      }
+    }
+    if (partOfDay && dayOffset === null) dayOffset = 0;
 
     let remindAt = null;
     if (hour !== null || partOfDay || (dayOffset !== null && dayOffset > 0)) {
@@ -151,10 +167,20 @@
       if (d > base) remindAt = d.toISOString();
     }
 
-    let title = s.replace(/\s+/g, ' ').trim().replace(/^[,.;:\-–]+\s*|\s*[,.;:\-–]+$/g, '');
-    if (!title) title = original;
-    return { title, remindAt, today: dayOffset === 0 };
+    return { title: cleanTitle(s, original), remindAt, today: dayOffset === 0 };
   }
+
+  // Próxima vez que el reloj marque hora:minuto (en un día de la semana concreto, si se indica).
+  function nextAt(hour, minute = 0, weekday = null, now = Date.now()) {
+    const d = new Date(now);
+    d.setHours(hour, minute, 0, 0);
+    if (weekday !== null) d.setDate(d.getDate() + ((weekday - d.getDay() + 7) % 7));
+    if (d.getTime() <= now) d.setDate(d.getDate() + (weekday !== null ? 7 : 1));
+    return d.toISOString();
+  }
+
+  // Texto para buscar sin importar mayúsculas ni tildes.
+  const searchKey = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
   /* ---------- Repeticiones ---------- */
 
@@ -285,6 +311,6 @@
   return {
     DAY, STARS, LEVELS,
     dayKey, dayDiff, addDays, fmtTime, toLocalInput, fmtWhen, fmtDay, fmtLongDate,
-    parseQuickInput, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
+    parseQuickInput, nextAt, searchKey, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
   };
 });

@@ -45,6 +45,29 @@ test('captura: esta tarde, pasado mañana y días de la semana', () => {
   assert.equal(L.parseQuickInput('Reunión el jueves', NOW).remindAt, at(15, 9), 'mismo día de la semana = la próxima');
 });
 
+test('captura: tiempos relativos', () => {
+  const r = L.parseQuickInput('Sacar la ropa de la lavadora en 45 min', NOW);
+  assert.equal(r.title, 'Sacar la ropa de la lavadora');
+  assert.equal(r.remindAt, at(8, 10, 45));
+  assert.equal(L.parseQuickInput('Llamar en media hora', NOW).remindAt, at(8, 10, 30));
+  assert.equal(L.parseQuickInput('Revisar el horno dentro de 2 horas', NOW).remindAt, at(8, 12));
+  assert.equal(L.parseQuickInput('Pensar en 3 ideas', NOW).remindAt, null, 'un número sin unidad no es un aviso');
+});
+
+test('captura: mañana por la tarde', () => {
+  const r = L.parseQuickInput('Ir al gimnasio mañana por la tarde', NOW);
+  assert.equal(r.title, 'Ir al gimnasio');
+  assert.equal(r.remindAt, at(9, 18));
+  assert.equal(L.parseQuickInput('Correr mañana por la mañana', NOW).remindAt, at(9, 9));
+});
+
+test('próxima hora fija y búsqueda sin tildes', () => {
+  assert.equal(L.nextAt(8, 0, null, NOW.getTime()), at(9, 8));
+  assert.equal(L.nextAt(22, 0, null, NOW.getTime()), at(8, 22));
+  assert.equal(L.nextAt(18, 0, 0, NOW.getTime()), at(11, 18), 'domingo siguiente');
+  assert.equal(L.searchKey('Médico ÁRBOL'), 'medico arbol');
+});
+
 test('repetición diaria, laborables y semanal', () => {
   const now = NOW.getTime();
   assert.equal(L.nextOccurrence(at(8, 9), 'daily', now), at(9, 9));
