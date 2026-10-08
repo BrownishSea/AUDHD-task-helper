@@ -68,6 +68,19 @@ test('próxima hora fija y búsqueda sin tildes', () => {
   assert.equal(L.searchKey('Médico ÁRBOL'), 'medico arbol');
 });
 
+test('foto de perfil: solo imágenes seguras y recorte cuadrado', () => {
+  assert.equal(L.isSafePhoto('data:image/jpeg;base64,/9j/4AAQSkZJRg=='), true);
+  assert.equal(L.isSafePhoto('data:image/webp;base64,UklGRg+/'), true);
+  assert.equal(L.isSafePhoto('javascript:alert(1)'), false);
+  assert.equal(L.isSafePhoto('data:image/svg+xml;base64,PHN2Zz4='), false);
+  assert.equal(L.isSafePhoto('data:image/png;base64,abc" onerror="x'), false);
+  assert.equal(L.isSafePhoto('data:image/png;base64,' + 'A'.repeat(400000)), false);
+  assert.equal(L.isSafePhoto(null), false);
+  assert.deepEqual(L.squareCrop(4000, 3000), { sx: 500, sy: 0, side: 3000 });
+  assert.deepEqual(L.squareCrop(3000, 4000), { sx: 0, sy: 300, side: 3000 });
+  assert.deepEqual(L.squareCrop(120, 120), { sx: 0, sy: 0, side: 120 });
+});
+
 test('repetición diaria, laborables y semanal', () => {
   const now = NOW.getTime();
   assert.equal(L.nextOccurrence(at(8, 9), 'daily', now), at(9, 9));

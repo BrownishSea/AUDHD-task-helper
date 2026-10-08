@@ -179,6 +179,16 @@
     return d.toISOString();
   }
 
+  // Foto de perfil: solo imágenes JPEG/PNG/WebP en data URL y de tamaño razonable (va a un atributo src).
+  const PHOTO_RE = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+  const isSafePhoto = s => typeof s === 'string' && s.length <= 400000 && PHOTO_RE.test(s);
+
+  // Recorte cuadrado de una imagen w×h. En los retratos sube hacia arriba, donde suele estar la cara.
+  function squareCrop(w, h) {
+    const side = Math.min(w, h);
+    return { sx: (w - side) / 2, sy: h > w ? (h - side) * 0.3 : (h - side) / 2, side };
+  }
+
   // Texto para buscar sin importar mayúsculas ni tildes.
   const searchKey = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
@@ -311,6 +321,6 @@
   return {
     DAY, STARS, LEVELS,
     dayKey, dayDiff, addDays, fmtTime, toLocalInput, fmtWhen, fmtDay, fmtLongDate,
-    parseQuickInput, nextAt, searchKey, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
+    parseQuickInput, nextAt, searchKey, isSafePhoto, squareCrop, nextOccurrence, shouldReset, rankTasks, weekStats, levelFor, buildICS,
   };
 });

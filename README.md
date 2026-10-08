@@ -33,6 +33,9 @@ Arriba a la derecha están tu **perfil** (círculo con inicial) y los **Ajustes*
 Toca el círculo con tu inicial. Cada perfil tiene **sus propias listas, avisos, estrellas y ajustes**.
 Sirve para compartir el dispositivo con otra persona o para separar contextos (por ejemplo «Casa» y «Trabajo»).
 
+- **Foto de perfil**: en *Editar* (o al crear un perfil) pulsa **Elegir foto** y escoge una de la galería o de tus archivos.
+  Se recorta en cuadrado, se reduce y se guarda solo en el dispositivo. Se ve al momento; **Cancelar** la deja como estaba
+  y **Quitar foto** vuelve a la inicial. La copia de seguridad no incluye la foto.
 - Los avisos de los otros perfiles también te llegan: «Aviso para Trabajo: …» con un botón para cambiar.
 - Al cambiar de perfil, si había una sesión de enfoque en marcha, queda en pausa.
 - Borrar un perfil se puede deshacer unos segundos. Los perfiles **no tienen contraseña**.
@@ -81,7 +84,7 @@ npm start            # abre http://localhost:8080
    No lo toques y en 10 minutos insistirá.
 3. En Tareas: abre una tarea, añade pasos, márcalos (estrellas y confeti), bórrala y pulsa **Deshacer**.
 4. Prueba **Vaciar la cabeza** con varias líneas y añade una **rutina**.
-5. Toca tu círculo de perfil → crea **«Trabajo»** → comprueba que está vacío → vuelve a tu perfil y todo sigue ahí.
+5. Toca tu círculo de perfil → **Editar** → **Elegir foto**. Luego crea **«Trabajo»** → comprueba que está vacío → vuelve a tu perfil y todo sigue ahí.
 6. En Logros, **anota algo que hiciste**.
 7. En el móvil: instala la app, ponte un aviso `en 2 minutos` y bloquea la pantalla para ver cómo se comporta tu teléfono.
 

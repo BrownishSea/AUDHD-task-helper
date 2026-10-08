@@ -9,6 +9,9 @@
   const HOUR = 60 * MIN;
   const NAG_EVERY = 10 * MIN;
   const NAG_MAX = 2;
+  const PHOTO_SIZE = 192;
+  const PHOTO_MAX_BYTES = 30 * 1024 * 1024;
+  const PHOTO_MAX_CHARS = 150000;
   // Dentro de un iframe (por ejemplo, la vista previa de claude.ai) no hay descargas ni service worker.
   const EMBEDDED = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
 
@@ -81,10 +84,23 @@
   };
 
   const store = {
+    lastError: '',
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } },
+    set(k, v) {
+      try {
+        localStorage.setItem(k, v);
+        store.lastError = '';
+        return true;
+      } catch (e) {
+        store.lastError = (e && e.name) || 'error';
+        return false;
+      }
+    },
     remove(k) { try { localStorage.removeItem(k); } catch (e) { /* nada que borrar */ } },
   };
+  // QuotaExceededError (Chrome, Safari) o NS_ERROR_DOM_QUOTA_REACHED (Firefox): el almacenamiento está lleno.
+  // Cualquier otro error significa que el navegador no deja guardar nada (datos de sitio bloqueados).
+  const storageFull = () => /quota/i.test(store.lastError);
 
   const svg = (body, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${body}</svg>`;
   const ICON = {
@@ -108,7 +124,8 @@
   const stateKey = id => `${KEY}:${id}`;
   const safeColor = c => (PROFILE_COLORS.some(([v]) => v === c) ? c : PROFILE_COLORS[0][0]);
   const initial = name => (Array.from(String(name).trim())[0] || '?').toUpperCase();
-  const avatar = p => `<span class="avatar" style="background:${safeColor(p.color)}" aria-hidden="true">${esc(initial(p.name))}</span>`;
+  const avatarInner = p => (p.photo ? `<img src="${esc(p.photo)}" alt="">` : esc(initial(p.name)));
+  const avatar = (p, opts = {}) => `<span${opts.id ? ` id="${opts.id}"` : ''} class="avatar${p.photo ? ' has-photo' : ''}${opts.cls ? ' ' + opts.cls : ''}" style="background:${safeColor(p.color)}" aria-hidden="true">${avatarInner(p)}</span>`;
 
   function loadProfiles() {
     let meta = null;
@@ -121,7 +138,11 @@
       if (legacy && store.set(stateKey(id), legacy)) store.remove(KEY);
       store.set(PROFILES_KEY, JSON.stringify(meta));
     }
-    meta.list = meta.list.filter(p => p && p.id).map(p => ({ id: String(p.id), name: String(p.name || 'Perfil').slice(0, 24), color: safeColor(p.color) }));
+    meta.list = meta.list.filter(p => p && p.id).map(p => {
+      const item = { id: String(p.id), name: String(p.name || 'Perfil').slice(0, 24), color: safeColor(p.color) };
+      if (L.isSafePhoto(p.photo)) item.photo = p.photo;
+      return item;
+    });
     if (!meta.list.some(p => p.id === meta.active)) meta.active = meta.list[0].id;
     return meta;
   }
@@ -204,13 +225,15 @@
   let saveTimer = null;
   let storageWarned = false;
 
+  function warnStorage() {
+    if (storageWarned) return;
+    storageWarned = true;
+    toast('Este navegador no me deja guardar. Tus cambios se perderán al cerrar.');
+  }
   function save() {
     clearTimeout(saveTimer);
     saveTimer = null;
-    if (!store.set(stateKey(profiles.active), JSON.stringify(state)) && !storageWarned) {
-      storageWarned = true;
-      toast('Este navegador no me deja guardar. Tus cambios se perderán al cerrar.');
-    }
+    if (!store.set(stateKey(profiles.active), JSON.stringify(state))) warnStorage();
   }
   function saveSoon() {
     clearTimeout(saveTimer);
@@ -232,6 +255,11 @@
     sheet: null,
     sheetOpener: null,
     editProfile: null,
+    photoDraft: null,
+    photoPending: null,
+    editPhotoOrig: undefined,
+    photoToasts: [],
+    creatingProfile: false,
     reminderQueue: [],
     remNote: '',
     focusNote: '',
@@ -280,12 +308,19 @@
     if (ui.justDone) setTimeout(() => { ui.justDone = null; }, 0);
   }
 
+  // La cabecera solo se toca si cambió el perfil, para no recargar la foto en cada render.
+  let shownProfile = {};
   function renderHeader() {
     const p = currentProfile();
-    $('profileAvatar').textContent = initial(p.name);
-    $('profileAvatar').style.background = safeColor(p.color);
-    $('profileName').textContent = p.name;
-    $('profileBtn').setAttribute('aria-label', `Perfil: ${p.name}. Cambiar de perfil`);
+    if (p.id !== shownProfile.id || p.name !== shownProfile.name || p.color !== shownProfile.color || p.photo !== shownProfile.photo) {
+      shownProfile = { id: p.id, name: p.name, color: p.color, photo: p.photo };
+      const av = $('profileAvatar');
+      av.style.background = safeColor(p.color);
+      av.classList.toggle('has-photo', !!p.photo);
+      av.innerHTML = avatarInner(p);
+      $('profileName').textContent = p.name;
+      $('profileBtn').setAttribute('aria-label', `Perfil: ${p.name}. Cambiar de perfil`);
+    }
     $('captureInput').placeholder = pickDaily(PLACEHOLDERS);
   }
 
@@ -753,7 +788,7 @@
         </ul>
       </details>
       <div class="set-group"><h3>Tus datos</h3>
-        <p class="hint">Todo se guarda solo en este navegador y en este dispositivo. La copia incluye solo este perfil.</p>
+        <p class="hint">Todo se guarda solo en este navegador y en este dispositivo. La copia incluye solo este perfil (sin la foto).</p>
         <div class="row">
           ${EMBEDDED ? '' : '<button class="btn" data-action="export-download">Descargar copia</button>'}
           <button class="btn" data-action="export-copy">Copiar copia</button>
@@ -779,6 +814,20 @@
       <input type="radio" name="${prefix}Color" id="${prefix}-c${i}" value="${c}" ${c === selected ? 'checked' : ''}><span class="sr-only">${name}</span></label>`).join('')}</div></fieldset>`;
   }
 
+  function photoField(prefix, p) {
+    return `<div class="field"><span class="field-label">Foto (opcional)</span>
+      <div class="photo-row">
+        ${avatar(p, { id: `${prefix}-preview`, cls: 'avatar-lg' })}
+        <div class="photo-actions">
+          <button class="btn sm" type="button" id="${prefix}-pick" data-action="photo-pick" data-prefix="${prefix}">${p.photo ? 'Cambiar foto' : 'Elegir foto'}</button>
+          <button class="btn sm ghost danger-text" type="button" id="${prefix}-photo-del" data-action="photo-remove" data-prefix="${prefix}" ${p.photo ? '' : 'hidden'}>Quitar foto</button>
+        </div>
+        <input type="file" id="${prefix}-photo" data-photo="${prefix}" accept="image/*" class="sr-only" tabindex="-1" aria-hidden="true">
+      </div>
+      <p class="hint">${prefix === 'pe' ? 'Se ve al momento; «Cancelar» la deja como estaba. ' : ''}Se recorta en cuadrado y se guarda en pequeño, solo en este dispositivo.</p>
+    </div>`;
+  }
+
   function profilesSheet() {
     const used = new Set(profiles.list.map(p => p.color));
     const nextColor = (PROFILE_COLORS.find(([c]) => !used.has(c)) || PROFILE_COLORS[0])[0];
@@ -791,6 +840,7 @@
             : `<button class="btn sm ghost danger-text" type="button" data-action="profile-delete-ask" data-pid="${p.id}">Borrar perfil</button>`;
         return `<li class="profile-item is-editing"><form class="stack" id="profileEditForm" data-pid="${p.id}" autocomplete="off">
           <label class="field"><span class="field-label">Nombre</span><input class="input" id="peName" maxlength="24" value="${esc(p.name)}"></label>
+          ${photoField('pe', p)}
           ${colorPicker('pe', p.color)}
           <div class="row"><button class="btn sm primary" type="submit">Guardar</button><button class="btn sm ghost" type="button" data-action="profile-edit-cancel">Cancelar</button>${del}</div>
         </form></li>`;
@@ -808,10 +858,11 @@
     return `
       <div class="set-group"><h3>¿Quién usa Pasito ahora?</h3>
         <ul class="profile-list">${items}</ul>
-        <p class="hint">Cada perfil tiene sus propias listas, avisos, estrellas y ajustes. Sirve para compartir el dispositivo o para separar, por ejemplo, trabajo y casa. Los avisos de los demás perfiles también te llegan.</p>
+        <p class="hint">Toca «Editar» para cambiar el nombre, la foto o el color. Cada perfil tiene sus propias listas, avisos, estrellas y ajustes: sirve para compartir el dispositivo o para separar, por ejemplo, trabajo y casa. Los avisos de los demás perfiles también te llegan.</p>
       </div>
       <form class="set-group" id="profileNewForm" autocomplete="off"><h3>Nuevo perfil</h3>
         <label class="field"><span class="field-label">Nombre</span><input class="input" id="pnName" maxlength="24" placeholder="Ej.: Trabajo, Casa, Ana"></label>
+        ${photoField('pn', { name: '', color: nextColor, photo: ui.photoDraft })}
         ${colorPicker('pn', nextColor)}
         <label class="switch"><input type="checkbox" id="pnExamples"><span>Empezar con tareas de ejemplo</span></label>
         <div class="row"><button class="btn primary" type="submit">Crear y usar este perfil</button></div>
@@ -830,6 +881,8 @@
     ui.sheetOpener = opener || null;
     ui.confirm = null;
     ui.editProfile = null;
+    ui.photoDraft = null;
+    ui.editPhotoOrig = undefined;
     sheetEl.hidden = false;
     renderSheet();
     $('sheetClose').focus();
@@ -873,6 +926,7 @@
     toastsEl.appendChild(el);
     while (toastsEl.children.length > 2) removeToast(toastsEl.firstElementChild.id);
     setTimeout(() => removeToast(id), opts.action ? 8000 : 3800);
+    return id;
   }
   function removeToast(id) {
     const el = $(id);
@@ -1221,13 +1275,153 @@
     toast(`Hola, ${p.name}.${paused ? ' Dejé en pausa la sesión de enfoque del otro perfil.' : ''}`, { hand: true });
   }
 
-  function createProfile(name, color, withExamples) {
+  function createProfile(name, color, withExamples, photo) {
     const p = { id: uid(), name, color: safeColor(color) };
     const fresh = freshState(withExamples);
     Object.assign(fresh.settings, { sound: state.settings.sound, calm: state.settings.calm, theme: state.settings.theme });
-    profiles.list.push(p);
+    // Primero lo esencial (tareas y ajustes); la foto, si no cabe, se descarta y se avisa.
     store.set(stateKey(p.id), JSON.stringify(fresh));
+    profiles.list.push(p);
+    let photoDropped = false;
+    if (L.isSafePhoto(photo)) {
+      p.photo = photo;
+      if (!saveProfiles() && storageFull()) {
+        delete p.photo;
+        photoDropped = true;
+      }
+    }
+    ui.photoDraft = null;
     activateProfile(p.id, true);
+    // Después de activateProfile, que limpia los avisos anteriores.
+    if (photoDropped) toast('No quedaba espacio para la foto; el perfil se creó sin ella. Puedes añadirla luego desde «Editar».');
+  }
+
+  /* ---------- Foto de perfil ---------- */
+
+  // Recorta en cuadrado y reduce a PHOTO_SIZE. Primero a 1024 px como mucho y luego a la mitad cada vez,
+  // para que no salga pixelada en navegadores que suavizan poco al reducir.
+  function makePhoto(file) {
+    return new Promise((resolve, reject) => {
+      if (file.type && !/^image\//.test(file.type)) {
+        reject(new Error('archivo'));
+        return;
+      }
+      if (file.size > PHOTO_MAX_BYTES) {
+        reject(new Error('grande'));
+        return;
+      }
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const { sx, sy, side } = L.squareCrop(img.naturalWidth, img.naturalHeight);
+          if (!side) throw new Error('vacía');
+          let size = Math.min(side, 1024);
+          let src = document.createElement('canvas');
+          src.width = src.height = size;
+          const ctx = src.getContext('2d');
+          ctx.fillStyle = '#FFFFFF'; // las zonas transparentes quedan blancas en el JPEG
+          ctx.fillRect(0, 0, size, size);
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+          while (size > PHOTO_SIZE) {
+            const next = Math.max(PHOTO_SIZE, Math.round(size / 2));
+            const c = document.createElement('canvas');
+            c.width = c.height = next;
+            const cx = c.getContext('2d');
+            cx.imageSmoothingQuality = 'high';
+            cx.drawImage(src, 0, 0, size, size, 0, 0, next, next);
+            src = c;
+            size = next;
+          }
+          let data = src.toDataURL('image/jpeg', 0.85);
+          if (data.length > PHOTO_MAX_CHARS) data = src.toDataURL('image/jpeg', 0.6);
+          if (!L.isSafePhoto(data)) throw new Error('formato');
+          resolve(data);
+        } catch (e) {
+          reject(e);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('ilegible'));
+      };
+      img.src = url;
+    });
+  }
+
+  function refreshPhotoPreview(prefix) {
+    const preview = $(`${prefix}-preview`);
+    if (!preview) return;
+    const p = prefix === 'pe' ? profiles.list.find(x => x.id === ui.editProfile) : null;
+    const photo = p ? p.photo : ui.photoDraft;
+    const name = ($(`${prefix}Name`) || {}).value || (p ? p.name : '');
+    const color = (document.querySelector(`input[name="${prefix}Color"]:checked`) || {}).value || (p && p.color);
+    preview.style.background = safeColor(color);
+    preview.classList.toggle('has-photo', !!photo);
+    preview.innerHTML = avatarInner({ name, photo });
+    const pick = $(`${prefix}-pick`);
+    const del = $(`${prefix}-photo-del`);
+    pick.textContent = photo ? 'Cambiar foto' : 'Elegir foto';
+    pick.removeAttribute('aria-busy');
+    const hadFocus = document.activeElement === del;
+    del.hidden = !photo;
+    if (hadFocus && !photo) pick.focus();
+  }
+
+  function applyProfilePhoto(pid, photo, undoable) {
+    const p = profiles.list.find(x => x.id === pid);
+    if (!p) return false;
+    const prev = p.photo || null;
+    if (photo) p.photo = photo;
+    else delete p.photo;
+    if (!saveProfiles()) {
+      if (storageFull()) {
+        if (prev) p.photo = prev;
+        else delete p.photo;
+        toast('No queda espacio en este navegador para la foto. Borra tareas hechas que no necesites y prueba otra vez.');
+        return false;
+      }
+      warnStorage(); // no se puede guardar nada: la foto se queda mientras la app esté abierta, como el resto
+    }
+    renderHeader();
+    if (ui.editProfile === pid) refreshPhotoPreview('pe');
+    else renderSheet();
+    if (undoable && prev !== (photo || null)) {
+      ui.photoToasts.push(toast(photo ? 'Foto de perfil guardada.' : 'Foto quitada.', { action: { label: 'Deshacer', run: () => applyProfilePhoto(pid, prev, false) } }));
+    }
+    return true;
+  }
+
+  // Nunca rechaza: el formulario de perfil nuevo espera a que termine (ui.photoPending) antes de crear el perfil.
+  let photoSeq = 0;
+  async function handlePhotoFile(prefix, file) {
+    const pid = ui.editProfile;
+    const seq = ++photoSeq;
+    const pick = $(`${prefix}-pick`);
+    if (pick) {
+      pick.textContent = 'Preparando foto…';
+      pick.setAttribute('aria-busy', 'true');
+    }
+    let data = null;
+    try {
+      data = await makePhoto(file);
+    } catch (e) {
+      if (seq !== photoSeq) return;
+      refreshPhotoPreview(prefix);
+      toast(e && e.message === 'grande'
+        ? 'Esa imagen pesa demasiado (más de 30 MB). Prueba con otra o con una captura de pantalla.'
+        : 'No pude leer esa imagen. Prueba con una foto JPG o PNG.');
+      return;
+    }
+    if (seq !== photoSeq) return; // eligieron otra foto mientras tanto
+    if (prefix === 'pe') applyProfilePhoto(pid, data, true);
+    else {
+      ui.photoDraft = data;
+      refreshPhotoPreview('pn');
+    }
   }
 
   function deleteProfile(id) {
@@ -1797,13 +1991,26 @@
     },
     'profile-edit'(t, btn) {
       ui.editProfile = btn.dataset.pid;
+      const p = profiles.list.find(x => x.id === ui.editProfile);
+      ui.editPhotoOrig = p ? p.photo || null : undefined;
+      ui.photoToasts = [];
       ui.confirm = null;
       renderSheet();
       $('peName').focus();
     },
     'profile-edit-cancel'() {
+      const pid = ui.editProfile;
+      const p = profiles.list.find(x => x.id === pid);
+      const orig = ui.editPhotoOrig;
       ui.editProfile = null;
+      ui.editPhotoOrig = undefined;
       ui.confirm = null;
+      if (p && orig !== undefined && (p.photo || null) !== orig) {
+        ui.photoToasts.forEach(removeToast);
+        applyProfilePhoto(pid, orig, false);
+        toast('Foto como estaba.');
+      }
+      ui.photoToasts = [];
       renderSheet();
     },
     'profile-delete-ask'(t, btn) {
@@ -1811,6 +2018,17 @@
       renderSheet();
     },
     'profile-delete'(t, btn) { deleteProfile(btn.dataset.pid); },
+    'photo-pick'(t, btn) {
+      const input = $(`${btn.dataset.prefix}-photo`);
+      if (input) input.click();
+    },
+    'photo-remove'(t, btn) {
+      if (btn.dataset.prefix === 'pe') applyProfilePhoto(ui.editProfile, null, true);
+      else {
+        ui.photoDraft = null;
+        refreshPhotoPreview('pn');
+      }
+    },
     async 'notif-enable'() {
       if (!('Notification' in window)) {
         toast('Este navegador no permite avisos del sistema. Te avisaré dentro de la app.');
@@ -1953,7 +2171,8 @@
       render();
       toast(existing ? `Ya tenías «${existing}».` : `Lista «${name}» creada. Lo que anotes ahora irá ahí.`);
     },
-    profileNewForm() {
+    async profileNewForm() {
+      if (ui.creatingProfile) return;
       const name = $('pnName').value.trim().slice(0, 24);
       if (!name) {
         $('pnName').focus();
@@ -1961,7 +2180,16 @@
         return;
       }
       const color = (document.querySelector('input[name="pnColor"]:checked') || {}).value;
-      createProfile(name, color, $('pnExamples').checked);
+      const examples = $('pnExamples').checked;
+      ui.creatingProfile = true;
+      try {
+        if (ui.photoPending) await ui.photoPending; // la foto elegida aún se está preparando
+        ui.photoPending = null;
+        if (ui.sheet !== 'profiles') return; // cerraron la hoja mientras tanto
+        createProfile(name, color, examples, ui.photoDraft);
+      } finally {
+        ui.creatingProfile = false;
+      }
     },
     profileEditForm(form) {
       const p = profiles.list.find(x => x.id === form.dataset.pid);
@@ -1970,6 +2198,8 @@
       p.name = name;
       p.color = safeColor((document.querySelector('input[name="peColor"]:checked') || {}).value);
       ui.editProfile = null;
+      ui.editPhotoOrig = undefined;
+      ui.photoToasts = [];
       saveProfiles();
       renderSheet();
       render();
@@ -1999,6 +2229,10 @@
 
   document.addEventListener('input', e => {
     const el = e.target;
+    if (el.id === 'pnName' || el.id === 'peName') {
+      refreshPhotoPreview(el.id.slice(0, 2));
+      return;
+    }
     if (el.id === 'taskSearch') {
       ui.search = el.value;
       render();
@@ -2022,6 +2256,19 @@
 
   document.addEventListener('change', e => {
     const el = e.target;
+    if (el.dataset.photo) {
+      const file = el.files && el.files[0];
+      el.value = '';
+      if (file) {
+        const job = handlePhotoFile(el.dataset.photo, file);
+        if (el.dataset.photo === 'pn') ui.photoPending = job;
+      }
+      return;
+    }
+    if (el.name === 'pnColor' || el.name === 'peColor') {
+      refreshPhotoPreview(el.name.slice(0, 2));
+      return;
+    }
     if (el.id === 'showDone') {
       ui.showDone = el.checked;
       render();

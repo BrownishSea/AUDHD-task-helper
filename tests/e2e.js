@@ -230,6 +230,109 @@ function serve() {
     assert.equal(JSON.parse(await page.evaluate(id => localStorage.getItem(`pasito-v1:${id}`), workId)).tasks.length, 1);
   });
 
+  await step('foto de perfil: elegir, recortar, deshacer, rechazar archivos malos y crear con foto', async () => {
+    if (await page.isHidden('#sheet')) await page.click('#profileBtn');
+    const id = (await data()).meta.active;
+    const photoOf = async pid => (await data()).meta.list.find(p => p.id === pid).photo;
+    await page.click(`#pe-${id}`);
+    await page.setInputFiles('#pe-photo', path.join(ROOT, 'icon-512.png'));
+    await page.waitForSelector('#profileAvatar img');
+    const photo = await photoOf(id);
+    assert.match(photo, /^data:image\/jpeg;base64,/);
+    assert.ok(photo.length < 150000, `foto de ${photo.length} caracteres`);
+    const dims = await page.evaluate(src => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = src; }), photo);
+    assert.deepEqual(dims, [192, 192]);
+    assert.ok(await page.isVisible('#pe-preview img'));
+    assert.ok(await page.isVisible('#pe-photo-del'));
+    await shot('10-foto');
+
+    await page.click('.toast:has-text("Foto de perfil guardada") .toast-btn');
+    assert.equal(await photoOf(id), undefined);
+    assert.equal(await page.$('#profileAvatar img'), null);
+
+    await page.setInputFiles('#pe-photo', { name: 'nota.png', mimeType: 'image/png', buffer: Buffer.from('no soy una imagen') });
+    await page.waitForSelector('.toast:has-text("No pude leer esa imagen")');
+    assert.equal(await photoOf(id), undefined);
+    await page.setInputFiles('#pe-photo', { name: 'nota.txt', mimeType: 'text/plain', buffer: Buffer.from('hola') });
+    assert.equal(await photoOf(id), undefined);
+
+    await page.setInputFiles('#pe-photo', path.join(ROOT, 'icon-512.png'));
+    await page.waitForSelector('#profileAvatar img');
+    await page.focus('#pe-photo-del');
+    await page.keyboard.press('Enter');
+    assert.equal(await photoOf(id), undefined);
+    assert.equal(await page.$('#profileAvatar img'), null);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'pe-pick', 'el foco sigue dentro de la hoja');
+
+    // «Cancelar» deja la foto como estaba al abrir el editor (aquí, sin foto).
+    await page.setInputFiles('#pe-photo', path.join(ROOT, 'icon-512.png'));
+    await page.waitForSelector('#profileAvatar img');
+    await page.click('[data-action="profile-edit-cancel"]');
+    assert.equal(await photoOf(id), undefined);
+    assert.equal(await page.$('#profileAvatar img'), null);
+
+    // Crear sin esperar a que se vea la vista previa: el perfil se crea igual con su foto.
+    await page.fill('#pnName', 'Ana');
+    assert.equal((await page.textContent('#pn-preview')).trim(), 'A');
+    await page.setInputFiles('#pn-photo', path.join(ROOT, 'icon-512.png'));
+    await page.click('#profileNewForm button[type="submit"]');
+    await page.waitForSelector('#profileAvatar img');
+    const after = await data();
+    assert.equal(after.meta.list.find(p => p.id === after.meta.active).name, 'Ana');
+    assert.match(await photoOf(after.meta.active), /^data:image\/jpeg/);
+    assert.ok(await page.isVisible('#profileAvatar img'));
+
+    // Una foto manipulada en el almacenamiento no llega al src.
+    await page.evaluate(() => {
+      const m = JSON.parse(localStorage.getItem('pasito-perfiles'));
+      m.list[0].photo = 'javascript:alert(1)';
+      m.active = m.list[0].id;
+      localStorage.setItem('pasito-perfiles', JSON.stringify(m));
+    });
+    await page.reload();
+    await page.waitForTimeout(300);
+    assert.equal(await page.$('#profileAvatar img'), null);
+  });
+
+  await step('foto con almacenamiento lleno o bloqueado: avisos claros y nada se rompe', async () => {
+    const run = async (initScript, expectPhotoShown, expectedToast) => {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+      const pg = await ctx.newPage();
+      pg.on('pageerror', e => errors.push(e.message));
+      await pg.addInitScript(initScript);
+      await pg.goto(url);
+      await pg.click('#profileBtn');
+      await pg.click('[data-action="profile-edit"]');
+      await pg.setInputFiles('#pe-photo', path.join(ROOT, 'icon-512.png'));
+      await pg.waitForSelector(expectPhotoShown ? '#profileAvatar img' : `.toast:has-text("${expectedToast}")`);
+      assert.equal(!!(await pg.$('#profileAvatar img')), expectPhotoShown);
+      if (!expectPhotoShown) {
+        // Perfil nuevo con foto cuando no cabe: se crea sin ella y el aviso se ve después de cambiar.
+        await pg.click('[data-action="profile-edit-cancel"]');
+        await pg.fill('#pnName', 'Leo');
+        await pg.setInputFiles('#pn-photo', path.join(ROOT, 'icon-192.png'));
+        await pg.waitForSelector('#pn-preview img');
+        await pg.click('#profileNewForm button[type="submit"]');
+        await pg.waitForSelector('.toast:has-text("No quedaba espacio para la foto")');
+        assert.equal((await pg.textContent('#profileName')).trim(), 'Leo');
+        assert.equal(await pg.$('#profileAvatar img'), null);
+      }
+      await ctx.close();
+    };
+    // Lleno: solo fallan las escrituras que llevan una foto.
+    await run(() => {
+      const orig = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        if (String(v).includes('data:image')) throw new DOMException('lleno', 'QuotaExceededError');
+        return orig.call(this, k, v);
+      };
+    }, false, 'No queda espacio');
+    // Bloqueado: nada se guarda (la app ya lo avisó al abrir), pero la foto se ve mientras esté abierta.
+    await run(() => {
+      Storage.prototype.setItem = function () { throw new DOMException('bloqueado', 'SecurityError'); };
+    }, true, null);
+  });
+
   await step('modo oscuro y ancho de móvil pequeño sin desbordes', async () => {
     await page.keyboard.press('Escape');
     await page.emulateMedia({ colorScheme: 'dark' });

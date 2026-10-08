@@ -33,6 +33,14 @@ recordatorios y estímulos positivos, porque le cuesta organizarse y entender qu
   `activateProfile()` guarda, pausa el enfoque, carga el otro estado, limpia `ui` y toasts y vuelve a Hoy.
   `checkOtherProfiles()` (en cada `tick`) dispara los avisos vencidos de los perfiles inactivos como toast + notificación.
   Los colores se validan contra `PROFILE_COLORS` (`safeColor`) porque van a un `style`.
+- **Foto de perfil** (`photo` en la entrada del perfil dentro de `pasito-perfiles`, data URL JPEG de 192 px, ~10–20 KB):
+  `makePhoto()` recorta con `L.squareCrop` (retratos sesgados hacia arriba), reduce a ≤1024 px y luego a mitades, rellena blanco
+  (transparencias) y valida con `L.isSafePhoto` (solo `data:image/jpeg|png|webp;base64`, ≤400 000 caracteres). `loadProfiles()`
+  descarta fotos que no pasen la validación (va a un `src`). En el editor (`pe`) se aplica al momento con «Deshacer» y
+  «Cancelar» la devuelve a `ui.editPhotoOrig`; en el perfil nuevo (`pn`) queda en `ui.photoDraft` y el envío espera a
+  `ui.photoPending`. `photoSeq` ignora decodificaciones viejas. Si guardar falla por cuota (`storageFull()`, mira `store.lastError`)
+  se revierte y se avisa; si el almacenamiento está bloqueado, la foto se queda en memoria como el resto (`warnStorage()`).
+  `renderHeader()` solo reescribe el avatar si cambió el perfil, para no recargar la imagen en cada render.
 - **Estado** de un perfil (`state`, versión 2):
   `{ version, lists[], tasks[], log[], stars, battery:{day,level}, focus:{taskId,minutes,lastMinutes,isBreak,phase,endAt,remaining,total}, settings:{sound,calm,theme,nag,goal}, lastVisit }`.
   Tarea: `{ id, title, notes, list, energy:'low'|'med'|'high', minutes, remindAt(ISO), repeat:'none'|'daily'|'weekdays'|'weekly', today, steps[{id,text,done}], done, doneAt, notified, nagAt, nags, snoozes, createdAt, example?, prevRemindAt? }`.
@@ -71,7 +79,9 @@ PLAYWRIGHT_MODULE=/opt/node22/lib/node_modules/playwright SHOTS_DIR=/tmp/captura
 
 `tests/e2e.js` cubre: migración v1→perfiles, ejemplos, sugerencia por batería, captura relativa, pasos/estrellas/deshacer,
 vaciar la cabeza, rutinas, búsqueda sin tildes, enfoque + ruido marrón, logro manual, aviso vencido + posponer + insistencia,
-perfiles (crear, aislar datos, aviso cruzado, volver, borrar y deshacer), modo oscuro sin desbordes a 360 px y cero errores JS.
+perfiles (crear, aislar datos, aviso cruzado, volver, borrar y deshacer), foto de perfil (recorte a 192 px, deshacer, cancelar,
+archivos no válidos, foco tras «Quitar foto», crear antes de que termine la decodificación, foto manipulada en el almacenamiento,
+almacenamiento lleno y bloqueado), modo oscuro sin desbordes a 360 px y cero errores JS.
 La guía para publicar en GitHub Pages está en el README.
 
 ## Limitaciones conocidas e ideas siguientes
@@ -81,6 +91,10 @@ La guía para publicar en GitHub Pages está en el README.
 - Sin sincronización entre dispositivos (solo copia/restauración manual por perfil). Perfiles sin contraseña.
 - El parser de captura es heurístico: «a las 1–6» sin «de la mañana» se entiende como tarde (13–18 h). No entiende fechas como «el 15».
 - `.ics` no pliega líneas de más de 75 octetos (los calendarios principales lo toleran).
+- Hecho en v1.2: foto de perfil (revisada con 4 revisores + verificación adversarial; 6 problemas confirmados y corregidos).
+- Si una pestaña con la versión anterior (sin fotos) sigue abierta y guarda la lista de perfiles, las fotos se pierden
+  (esa versión no conoce el campo). Es transitorio tras actualizar; recargar las pestañas viejas lo evita.
+- Ideas para la foto: elegir el encuadre a mano (zoom/arrastre) e incluirla en la copia de seguridad.
 - Hecho en v1.1: perfiles, insistencia de avisos, «Vaciar la cabeza», rutinas, búsqueda, ruido marrón, logros manuales, meta ajustable,
   tiempos relativos en la captura.
 - Ideas siguientes: reordenar por arrastre, revisión semanal guiada paso a paso, ordenar la Bandeja de una en una,
